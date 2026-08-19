@@ -1,0 +1,36 @@
+{
+  "_synthetic": true,
+  "note": "Placeholder articles — replace via admin.html once you have real content.",
+  "articles": [
+    {
+      "id": "a0001",
+      "title": "Liverpool's Araujo loan reshapes their defensive depth chart",
+      "author": "WIscore Editorial",
+      "date": "2026-08-11",
+      "tag": "Transfers",
+      "summary": "A surprise season-long loan from Barcelona gives Iraola cover at centre-back just as Konate's exit left a hole.",
+      "body": "Liverpool's loan deal for Ronald Araujo was one of the more unexpected pieces of transfer business in the closing weeks of the window. With Ibrahima Konate's move to Real Madrid leaving a gap at the heart of defence, Araujo's arrival — with an option to buy — gives Andoni Iraola a proven, versatile centre-back to rotate alongside van Dijk. Replace this placeholder with your own analysis once you're ready.",
+      "featured": true
+    },
+    {
+      "id": "a0002",
+      "title": "Why WIscore rates durability over reputation",
+      "author": "WIscore Editorial",
+      "date": "2026-08-10",
+      "tag": "Methodology",
+      "summary": "A look at how the model weighs proven full-season availability against marquee transfer fees.",
+      "body": "One of the trickier calls in any club-importance model is what to do with a big-money signing who hasn't yet proven their durability in a new league. WIscore's approach: reward season-long availability and role centrality first, reputation second. Replace this placeholder with your own analysis once you're ready.",
+      "featured": true
+    },
+    {
+      "id": "a0003",
+      "title": "Early-season injury trends to watch across the league",
+      "author": "WIscore Editorial",
+      "date": "2026-08-09",
+      "tag": "Analysis",
+      "summary": "A quick scan of pre-season fitness news ahead of Matchday 1.",
+      "body": "With the season about to start, a handful of clubs already have injury concerns worth tracking. Replace this placeholder with your own analysis once you're ready.",
+      "featured": true
+    }
+  ]
+}
