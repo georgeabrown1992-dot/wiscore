@@ -160,7 +160,9 @@
   .gw-preset.active { background: var(--accent); color: white; }
 
   /* Table */
-  .league-table { background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; overflow-x: auto; }
+  .league-table { background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; }
+  .table-scroll { position: relative; overflow-x: auto; border-radius: 6px; }
+  .table-scroll::after { content: ''; position: absolute; top: 0; right: 0; bottom: 0; width: 28px; pointer-events: none; background: linear-gradient(to right, transparent, var(--bg-card)); }
   table { width: 100%; border-collapse: collapse; min-width: 560px; }
   thead { background: var(--bg-elevated); }
   th { text-align: left; padding: 14px 16px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); font-weight: 600; border-bottom: 1px solid var(--border); cursor: pointer; user-select: none; }
@@ -348,17 +350,24 @@ async function bootstrap() {
     if (!txt || txt.startsWith('__')) return null;
     try { return JSON.parse(txt); } catch (e) { return null; }
   }
-  // Prefer embedded data (works from file://). Fall back to fetch() if missing.
-  let squads = readEmbedded('wi-data-squads');
-  let fpl = readEmbedded('wi-data-fpl');
-  let hist = readEmbedded('wi-data-history');
-  let insights = readEmbedded('wi-data-insights');
-  let fixtures = readEmbedded('wi-data-fixtures');
-  if (!squads) squads = await fetch('public/squads.json').then(r => r.json());
-  if (!fpl) fpl = await fetch('public/fpl-data.json').then(r => r.json()).catch(() => null);
-  if (!hist) hist = await fetch('public/gameweek-history.json').then(r => r.json()).catch(() => null);
-  if (!insights) insights = await fetch('public/insights.json').then(r => r.json()).catch(() => null);
-  if (!fixtures) fixtures = await fetch('public/fixtures.json').then(r => r.json()).catch(() => null);
+  // Live JSON is the source of truth. Embedded blocks are only a file:// fallback,
+  // so a stale build can never mask the nightly data refresh.
+  const live = async (file) => {
+    try {
+      const r = await fetch(file + '?v=' + Date.now(), { cache: 'no-store' });
+      if (!r.ok) return null;
+      return await r.json();
+    } catch (e) { return null; }
+  };
+  const [ls, lf, lh, li, lx] = await Promise.all([
+    live('public/squads.json'), live('public/fpl-data.json'), live('public/gameweek-history.json'),
+    live('public/insights.json'), live('public/fixtures.json'),
+  ]);
+  const squads = ls || readEmbedded('wi-data-squads');
+  const fpl = lf || readEmbedded('wi-data-fpl');
+  const hist = lh || readEmbedded('wi-data-history');
+  const insights = li || readEmbedded('wi-data-insights');
+  const fixtures = lx || readEmbedded('wi-data-fixtures');
   window.__WI = { squads, fpl, hist, insights, fixtures };
 }
 </script>
@@ -413,16 +422,24 @@ function computeClubWIscore(club, fpl, squads) {
     return { name: p.name, tier: p.tier, weight, score: p.score, fpl: match };
   });
 
+  // A player FPL marks 'u' (unavailable) has left the club - transferred or on loan
+  // elsewhere. That is a squad change, not an injury: it must not score.
+  const DEPARTED = /(joined|loan|left the club|transferred|signed for)/i;
+  const isDeparted = (p) => !!p && (p.status === 'u' || (p.status === 'n' && DEPARTED.test(p.news || '')) || DEPARTED.test(p.news || ''));
+
   const isOut = (p) => {
     if (!p) return false;
-    if (['i', 's', 'u'].includes(p.status)) return true;
+    if (isDeparted(p)) return false;
+    if (['i', 's'].includes(p.status)) return true;
     if (p.status === 'd' && (p.chance_this === null || p.chance_this <= 50)) return true;
     return false;
   };
 
+  const departed = ranked.filter(r => isDeparted(r.fpl));
+  const unmatched = ranked.filter(r => !r.fpl);
   const injured = ranked.filter(r => isOut(r.fpl));
   const wiscore = injured.reduce((s, r) => s + r.weight, 0);
-  return { wiscore: Math.round(wiscore * 100) / 100, injured, ranked };
+  return { wiscore: Math.round(wiscore * 100) / 100, injured, departed, unmatched, ranked };
 }
 
 /* ---------------- Components ---------------- */
@@ -717,7 +734,6 @@ function ClubBadge({ club, size = 28, blank = false }) {
 
 function LeagueTable({ setView, gw, historyData }) {
   const { squads, fpl, hist } = window.__WI;
-  const seasonStarted = !!(fpl?.current_event && fpl.current_event >= 1);
   const [sortKey, setSortKey] = useState('wiscore');
   const [sortDir, setSortDir] = useState('desc');
   const [search, setSearch] = useState('');
@@ -725,13 +741,15 @@ function LeagueTable({ setView, gw, historyData }) {
   const rows = useMemo(() => {
     return squads.clubs.map(club => {
       const live = computeClubWIscore(club, fpl, squads);
-      const hwi = seasonStarted ? ((hist?.clubs?.[club.name]?.wiscore) || []) : [];
-      const hlp = seasonStarted ? ((hist?.clubs?.[club.name]?.league_position) || []) : [];
-      // GW indexing: 1-based
-      const wAtGw = hwi[gw - 1] ?? live.wiscore;
-      const lpAtGw = hlp[gw - 1] ?? null;
-      const wPrev = hwi[gw - 2];
-      const lpPrev = hlp[gw - 2];
+      const hwi = (hist?.clubs?.[club.name]?.wiscore) || [];
+      const hlp = (hist?.clubs?.[club.name]?.league_position) || [];
+      // Index by recorded (verified) gameweek, not by position - history may start mid-season.
+      const gws = hist?.gameweeks || [];
+      const i = gws.indexOf(gw);
+      const wAtGw = (i >= 0 ? hwi[i] : undefined) ?? live.wiscore;
+      const lpAtGw = (i >= 0 ? hlp[i] : undefined) ?? null;
+      const wPrev = i > 0 ? hwi[i - 1] : undefined;
+      const lpPrev = i > 0 ? hlp[i - 1] : undefined;
       const wDelta = (wPrev !== undefined) ? wAtGw - wPrev : 0;
       const lpDelta = (lpPrev !== undefined && lpAtGw !== null) ? lpPrev - lpAtGw : 0; // +ve = climbed
       const zone = zoneFor(wAtGw, squads.zones);
@@ -773,6 +791,7 @@ function LeagueTable({ setView, gw, historyData }) {
       </div>
 
       <div class="league-table">
+        <div class="table-scroll">
         <table>
           <thead>
             <tr>
@@ -810,6 +829,7 @@ function LeagueTable({ setView, gw, historyData }) {
             `)}
           </tbody>
         </table>
+        </div>
       </div>
 
       <div class="grid-2">
@@ -837,10 +857,10 @@ function LeagueTable({ setView, gw, historyData }) {
             </select>
           </div>
         </div>
-        ${seasonStarted ? html`<${ClubTrendChart}
+        ${(hist?.gameweeks || []).length ? html`<${ClubTrendChart}
           club=${trendClubName} wiscore=${hist?.clubs?.[trendClubName]?.wiscore || []} lp=${hist?.clubs?.[trendClubName]?.league_position || []}
           club2=${trendClubName2 || null} wiscore2=${trendClubName2 ? (hist?.clubs?.[trendClubName2]?.wiscore || []) : null} lp2=${trendClubName2 ? (hist?.clubs?.[trendClubName2]?.league_position || []) : null}
-        />` : html`<div class="empty-state">Trend charts unlock once GW1 kicks off.</div>`}
+        />` : html`<div class="empty-state">No completed gameweeks recorded yet. Trend charts plot verified results only.</div>`}
       </div>
 
       <div class="email-capture">
@@ -925,15 +945,16 @@ function findNextFixture(clubName, fpl) {
 
 function ClubDetail({ clubName, setView, gw }) {
   const { squads, fpl, hist } = window.__WI;
-  const seasonStarted = !!(fpl?.current_event && fpl.current_event >= 1);
   const club = squads.clubs.find(c => c.name === clubName);
   if (!club) return html`<div class="empty-state">Club not found</div>`;
 
   const live = computeClubWIscore(club, fpl, squads);
-  const hwi = seasonStarted ? (hist?.clubs?.[club.name]?.wiscore || []) : [];
-  const hlp = seasonStarted ? (hist?.clubs?.[club.name]?.league_position || []) : [];
-  const currentWi = hwi[gw - 1] ?? live.wiscore;
-  const currentLp = hlp[gw - 1] ?? null;
+  const hwi = hist?.clubs?.[club.name]?.wiscore || [];
+  const hlp = hist?.clubs?.[club.name]?.league_position || [];
+  const gwIdx = (hist?.gameweeks || []).indexOf(gw);
+  const hasHistory = (hist?.gameweeks || []).length > 0;
+  const currentWi = (gwIdx >= 0 ? hwi[gwIdx] : undefined) ?? live.wiscore;
+  const currentLp = (gwIdx >= 0 ? hlp[gwIdx] : undefined) ?? null;
   const zone = zoneFor(currentWi, squads.zones);
   const color = CLUB_COLORS[club.name] || "#444";
 
@@ -1022,11 +1043,29 @@ function ClubDetail({ clubName, setView, gw }) {
 
         <div class="card">
           <h3 class="card-title">WIscore vs league position | 26/27</h3>
-          ${seasonStarted
+          ${hasHistory
             ? html`<${ClubTrendChart} club=${club.name} wiscore=${hwi} lp=${hlp} />`
-            : html`<div class="empty-state">Trend chart unlocks once GW1 kicks off.</div>`}
+            : html`<div class="empty-state">No completed gameweeks recorded yet. The trend chart plots verified data only - it fills in one point per finished gameweek.</div>`}
         </div>
       </div>
+
+      ${live.departed.length ? html`
+        <div class="card" style=${{ marginTop: 18 }}>
+          <h3 class="card-title">Squad changes | ${live.departed.length} player${live.departed.length === 1 ? '' : 's'} out of the squad</h3>
+          <div class="player-news" style=${{ marginBottom: 6 }}>Transfers and loans away. These do not count towards the WIscore.</div>
+          ${live.departed.map(p => html`
+            <div class="player-row" key=${p.name}>
+              <div class=${"player-tier tier-" + p.tier}>${({ best: 'B', first: '1', sub: 'S', youth: 'Y' })[p.tier] || '|'}</div>
+              <div>
+                <div class="player-name">${p.name}</div>
+                <div class="player-news">${p.fpl?.news || 'No longer listed in the club squad'}</div>
+              </div>
+              <div><span class="player-status-tag" style=${{ background: 'rgba(138,137,133,0.16)', color: '#b8b8b1' }}>Left</span></div>
+              <div></div>
+            </div>
+          `)}
+        </div>
+      ` : ''}
 
       <div class="card" style=${{ marginTop: 18 }}>
         <h3 class="card-title">Squad | tier breakdown</h3>
@@ -1039,7 +1078,15 @@ function ClubDetail({ clubName, setView, gw }) {
 function ClubTrendChart({ club, wiscore, lp, club2, wiscore2, lp2 }) {
   const ref = useRef(null);
   useEffect(() => {
-    const labels = Array.from({ length: 38 }, (_, i) => `GW${i + 1}`);
+    // Verified data only: chart exactly as many gameweeks as have real recorded values.
+    const played = Math.max(
+      (wiscore || []).length, (lp || []).length,
+      (wiscore2 || []).length, (lp2 || []).length
+    );
+    const gwList = (window.__WI?.hist?.gameweeks || []).slice(0, played);
+    const labels = gwList.length === played && played > 0
+      ? gwList.map(g => `GW${g}`)
+      : Array.from({ length: played }, (_, i) => `GW${i + 1}`);
     const datasets = [
       {
         label: `${club} | WIscore`,
@@ -1049,7 +1096,7 @@ function ClubTrendChart({ club, wiscore, lp, club2, wiscore2, lp2 }) {
         yAxisID: 'y',
         fill: !club2,
         tension: 0.3,
-        pointRadius: 0,
+        pointRadius: labels.length <= 6 ? 4 : 0,
       },
       {
         label: `${club} | League position`,
@@ -1057,7 +1104,7 @@ function ClubTrendChart({ club, wiscore, lp, club2, wiscore2, lp2 }) {
         borderColor: '#21e6a1',
         yAxisID: 'y1',
         tension: 0.3,
-        pointRadius: 0,
+        pointRadius: labels.length <= 6 ? 4 : 0,
       },
     ];
     if (club2) {
@@ -1069,7 +1116,7 @@ function ClubTrendChart({ club, wiscore, lp, club2, wiscore2, lp2 }) {
           yAxisID: 'y',
           fill: false,
           tension: 0.3,
-          pointRadius: 0,
+          pointRadius: labels.length <= 6 ? 4 : 0,
         },
         {
           label: `${club2} | League position`,
@@ -1077,7 +1124,7 @@ function ClubTrendChart({ club, wiscore, lp, club2, wiscore2, lp2 }) {
           borderColor: '#f2c94c',
           yAxisID: 'y1',
           tension: 0.3,
-          pointRadius: 0,
+          pointRadius: labels.length <= 6 ? 4 : 0,
         }
       );
     }
@@ -1088,7 +1135,7 @@ function ClubTrendChart({ club, wiscore, lp, club2, wiscore2, lp2 }) {
         interaction: { mode: 'index', intersect: false },
         plugins: { legend: { labels: { color: '#f6f5f2' } } },
         scales: {
-          x: { ticks: { color: '#8a8985', maxTicksLimit: 12 }, grid: { color: '#2a2a2e' } },
+          x: { ticks: { color: '#8a8985', maxTicksLimit: Math.max(2, Math.min(12, labels.length)) }, grid: { color: '#2a2a2e' } },
           y: { position: 'left', ticks: { color: '#ff3d2e' }, grid: { color: '#2a2a2e' }, title: { display: true, text: 'WIscore', color: '#ff3d2e' } },
           y1: { position: 'right', reverse: true, min: 1, max: 20, ticks: { color: '#21e6a1' }, grid: { display: false }, title: { display: true, text: 'League position', color: '#21e6a1' } },
         },
@@ -1123,7 +1170,7 @@ function SquadGrid({ club, squads }) {
         return html`
         <div key=${g.label}>
           <div style=${{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#8a8985', fontWeight: 600, marginBottom: 10 }}>
-            <span class=${"player-tier " + g.cls} style=${{ display: 'inline-grid', width: 20, height: 20, fontSize: 10, verticalAlign: 'middle', marginRight: 6, borderRadius: 10 }}>${abbr}</span>
+            <span class=${"player-tier " + g.cls} style=${{ display: 'inline-grid', minWidth: 22, width: 22, height: 22, padding: 0, fontSize: 11, color: '#fff', verticalAlign: 'middle', marginRight: 8, borderRadius: 11 }}>${abbr}</span>
             ${g.label}
           </div>
           ${g.members
@@ -1223,15 +1270,16 @@ function Methodology() {
 /* ---------------- Root ---------------- */
 function App() {
   const [view, setView] = useState({ name: 'table' });
-  const [gw, setGw] = useState(1);
   const { fpl, hist } = window.__WI;
-  const seasonStarted = !!(fpl?.current_event && fpl.current_event >= 1);
+  // Only gameweeks with recorded, verified results are selectable.
+  const verifiedGws = (hist?.gameweeks || []).slice().sort((a, b) => a - b);
+  const latestVerified = verifiedGws.length ? verifiedGws[verifiedGws.length - 1] : 0;
+  const [gw, setGw] = useState(latestVerified || 1);
+  const seasonStarted = verifiedGws.length > 0;
 
-  // sync gw initial value to the current FPL event if available
   useEffect(() => {
-    const ev = fpl?.current_event;
-    if (ev && ev >= 1 && ev <= 38) setGw(ev);
-  }, [fpl]);
+    if (latestVerified) setGw(latestVerified);
+  }, [latestVerified]);
 
   return html`
     <div class="app">
@@ -1239,15 +1287,20 @@ function App() {
       <div class="container">
         ${!seasonStarted ? html`
           <div class="alert">
-            <strong>Pre-season.</strong> Gameweek 1 hasn't kicked off yet - the table below reflects squads and any current injury news only. Gameweek history and trend charts will populate once the season starts.
+            <strong>Live squad view.</strong> No gameweek has been completed and verified yet, so the table below reflects current squads and live injury news only. Gameweek history and trend charts fill in one point per finished gameweek.
           </div>
         ` : (view.name === 'table' || view.name === 'clubs' || view.name === 'fixtures') ? html`
           <div class="gw-bar">
             <span class="gw-label">Gameweek</span>
             <span class="gw-value">GW ${gw}</span>
-            <input type="range" min="1" max=${fpl?.current_event || 1} value=${gw} onInput=${e => setGw(Number(e.target.value))} />
+            <input type="range" min=${verifiedGws[0]} max=${latestVerified} value=${gw}
+              onInput=${e => {
+                const v = Number(e.target.value);
+                // snap to the nearest verified gameweek
+                setGw(verifiedGws.reduce((a, b) => (Math.abs(b - v) < Math.abs(a - v) ? b : a), verifiedGws[0]));
+              }} />
             <div class="gw-presets">
-              ${[1, 10, 19, 28, 38].filter(g => g <= (fpl?.current_event || 1)).map(g => html`
+              ${verifiedGws.slice(-6).map(g => html`
                 <span key=${g} class=${"gw-preset " + (gw === g ? "active" : "")} onClick=${() => setGw(g)}>GW${g}</span>
               `)}
             </div>
@@ -1271,7 +1324,7 @@ function App() {
         ${view.name === 'methodology' ? html`<${Methodology} />` : ''}
       </div>
       <div class="footer">
-        <div class="footer-copy">© ${new Date().getFullYear()} WIscore</div>
+        <div class="footer-copy">© ${new Date().getFullYear()} WIscore · <a href="transfers.html" style=${{ color: '#6d6d68' }}>Transfer desk</a></div>
         <div class="social-links">
           <a href="https://x.com/wiscore_" target="_blank" rel="noopener noreferrer" aria-label="WIscore on X">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
