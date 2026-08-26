@@ -389,8 +389,15 @@ const CLUB_COLORS = {
   "Tottenham Hotspur": "#132257",
 };
 
-function zoneFor(score, zones) {
-  for (const z of zones) if (score >= z.min) return z;
+/* Live league position from the standings computed off finished fixtures. */
+function liveLp(club, fpl) {
+  const t = (fpl.teams || []).find(t => t.name === club.name || t.short_name === club.short);
+  if (!t) return null;
+  const s = (fpl.standings || []).find(s => s.id === t.id);
+  return (s && s.position) || t.position || null;
+}
+
+function zoneFor(score, zones) {  for (const z of zones) if (score >= z.min) return z;
   return zones[zones.length - 1];
 }
 
@@ -411,13 +418,19 @@ function computeClubWIscore(club, fpl, squads) {
         (club.youth || []).map(n => ({ name: n, tier: 'youth' }))
       );
 
-  const stripAccents = (s) => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const stripName = (s) => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().replace(/[^a-z ]/g, ' ').replace(/\s+/g, ' ').trim();
+  // Exact-only matching: substring matching used to attach one squad entry to a
+  // different player with a similar name ("Leon" -> "Leoni") and invent injuries.
+  const keysOf = (fp) => [fp.web_name, fp.second_name, `${fp.first_name} ${fp.second_name}`,
+    `${fp.first_name} ${fp.web_name}`, `${fp.web_name} ${fp.second_name}`].map(stripName);
   const ranked = enriched.map(p => {
-    const pn = stripAccents(p.name);
-    const match = teamPlayers.find(fp => {
-      const wn = stripAccents(fp.web_name), sn = stripAccents(fp.second_name);
-      return wn === pn || sn.endsWith(pn) || wn.includes(pn);
-    });
+    const pn = stripName(p.name);
+    let hits = pn ? teamPlayers.filter(fp => keysOf(fp).includes(pn)) : [];
+    if (!hits.length && pn) {
+      hits = teamPlayers.filter(fp => stripName(fp.second_name).split(' ').slice(-1)[0] === pn);
+    }
+    const match = hits.length === 1 ? hits[0] : undefined;
     const weight = (typeof p.score === 'number') ? p.score : tw[p.tier];
     return { name: p.name, tier: p.tier, weight, score: p.score, fpl: match };
   });
@@ -660,8 +673,8 @@ function FixtureDetail({ fixtureId, setView }) {
   const awayZone = zoneFor(awayWI.wiscore, squads.zones);
   const homeHist = hist?.clubs?.[fixture.home];
   const awayHist = hist?.clubs?.[fixture.away];
-  const homeLP = homeHist?.league_position?.[gw - 1] ?? '-';
-  const awayLP = awayHist?.league_position?.[gw - 1] ?? '-';
+  const homeLP = homeHist?.league_position?.[gw - 1] ?? liveLp(homeClub, fpl) ?? '-';
+  const awayLP = awayHist?.league_position?.[gw - 1] ?? liveLp(awayClub, fpl) ?? '-';
 
   function InjuredList({ club, wi }) {
     const list = wi.injured.slice().sort((a, b) => b.weight - a.weight);
@@ -747,7 +760,7 @@ function LeagueTable({ setView, gw, historyData }) {
       const gws = hist?.gameweeks || [];
       const i = gws.indexOf(gw);
       const wAtGw = (i >= 0 ? hwi[i] : undefined) ?? live.wiscore;
-      const lpAtGw = (i >= 0 ? hlp[i] : undefined) ?? null;
+      const lpAtGw = (i >= 0 ? hlp[i] : undefined) ?? liveLp(club, fpl);
       const wPrev = i > 0 ? hwi[i - 1] : undefined;
       const lpPrev = i > 0 ? hlp[i - 1] : undefined;
       const wDelta = (wPrev !== undefined) ? wAtGw - wPrev : 0;
@@ -954,7 +967,7 @@ function ClubDetail({ clubName, setView, gw }) {
   const gwIdx = (hist?.gameweeks || []).indexOf(gw);
   const hasHistory = (hist?.gameweeks || []).length > 0;
   const currentWi = (gwIdx >= 0 ? hwi[gwIdx] : undefined) ?? live.wiscore;
-  const currentLp = (gwIdx >= 0 ? hlp[gwIdx] : undefined) ?? null;
+  const currentLp = (gwIdx >= 0 ? hlp[gwIdx] : undefined) ?? liveLp(club, fpl);
   const zone = zoneFor(currentWi, squads.zones);
   const color = CLUB_COLORS[club.name] || "#444";
 

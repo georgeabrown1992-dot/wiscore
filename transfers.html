@@ -68,6 +68,16 @@
   </div>
 
   <div class="card">
+    <h2>Confirmed deals from the transfer feed</h2>
+    <div class="note" id="feed-note">Loading&hellip;</div>
+    <div class="results" id="feed-list"></div>
+    <div class="note" style="margin-top:12px">
+      In-league moves and exits are applied by the nightly job. Incoming signings need a tier (and
+      optionally a 0.10&ndash;5.00 score) before they can affect a WIscore, so they wait here.
+    </div>
+  </div>
+
+  <div class="card">
     <h2>Manual move</h2>
     <input type="text" id="search" placeholder="Type a player name, e.g. Masuaku" autocomplete="off" />
     <div class="results" id="search-list"></div>
@@ -94,17 +104,22 @@
 </div>
 
 <script>
-const strip = s => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+const strip = s => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase().replace(/[^a-z ]/g, ' ').replace(/\s+/g, ' ').trim();
 const DEPARTED_NEWS = /(has joined|joined on loan|on loan (at|to)|left the club|transferred|signed for)/i;
 const isDeparted = p => !!p && (p.status === 'u' || DEPARTED_NEWS.test(p.news || ''));
 
-let squads = null, fpl = null;
+let squads = null, fpl = null, transfers = null;
 const pending = [];
 
 function matchPlayer(name, pool) {
+  // Exact keys only - substring matching attached squad entries to the wrong player.
   const pn = strip(name);
-  let hits = pool.filter(fp => strip(fp.web_name) === pn || strip(fp.second_name) === pn);
-  if (!hits.length) hits = pool.filter(fp => strip(fp.second_name).endsWith(pn) || strip(fp.web_name).includes(pn));
+  if (!pn) return null;
+  const keys = fp => [fp.web_name, fp.second_name, `${fp.first_name} ${fp.second_name}`,
+    `${fp.first_name} ${fp.web_name}`, `${fp.web_name} ${fp.second_name}`].map(strip);
+  let hits = pool.filter(fp => keys(fp).includes(pn));
+  if (!hits.length) hits = pool.filter(fp => strip(fp.second_name).split(' ').slice(-1)[0] === pn);
   return hits.length === 1 ? hits[0] : null;
 }
 
@@ -145,6 +160,17 @@ function movePlayer(playerName, fromName, toName) {
   render();
 }
 
+function addPlayer(name, clubName, tier, score) {
+  const club = squads.clubs.find(c => c.name === clubName);
+  if (!club || club.players.some(p => strip(p.name) === strip(name))) return;
+  const entry = { name, tier };
+  if (score) entry.score = Number(score);
+  club.players.push(entry);
+  rebuildTiers(club);
+  pending.push({ player: name, from: null, to: clubName, add: true, tier, score: score ? Number(score) : undefined });
+  render();
+}
+
 function undo(i) {
   const c = pending[i];
   pending.splice(i, 1);
@@ -153,6 +179,12 @@ function undo(i) {
   pending.length = 0;
   loadSquadsCopy().then(() => { snapshot.forEach(c2 => movePlayerSilent(c2)); render(); });
   function movePlayerSilent(c2) {
+    if (c2.add) {
+      const club = squads.clubs.find(x => x.name === c2.to);
+      if (club) { const e = { name: c2.player, tier: c2.tier }; if (c2.score) e.score = c2.score; club.players.push(e); rebuildTiers(club); }
+      pending.push(c2);
+      return;
+    }
     const from = squads.clubs.find(x => x.name === c2.from);
     const to = c2.to ? squads.clubs.find(x => x.name === c2.to) : null;
     const p = from && from.players.find(x => x.name === c2.player);
@@ -190,6 +222,43 @@ function detect() {
     });
   });
   return found;
+}
+
+/* ---- arrivals read from the nightly transfer feed ---- */
+function renderFeed() {
+  const note = document.getElementById('feed-note');
+  const box = document.getElementById('feed-list');
+  if (!transfers) { note.textContent = 'No feed run recorded yet - the nightly job writes it.'; box.innerHTML = ''; return; }
+  const f = transfers.feed || {};
+  const applied = (transfers.moves || []).filter(m => m.source === 'transfer feed');
+  const left = (transfers.out || []).filter(o => /transfer feed/i.test(o.reason || ''));
+  const arrivals = (transfers.arrivals || []).filter(a => !squads.clubs.some(c => c.players.some(p => strip(p.name) === strip(a.player))));
+  note.innerHTML = (f.error ? `<span style="color:var(--amber)">Feed problem: ${f.error}</span><br />` : '')
+    + `${f.rows || 0} deals read${f.fetched_at ? ' | ' + new Date(f.fetched_at).toLocaleString('en-GB') : ''}`
+    + ` &middot; ${applied.length} moved, ${left.length} left the league, ${arrivals.length} signings to weight.`
+    + (f.source ? ` <a href="${f.source}" target="_blank" rel="noopener">Source</a>` : '');
+  box.innerHTML = arrivals.map((a, i) => `
+    <div class="result">
+      <div>
+        <div class="pname">${a.player} <span class="sub">&rarr; ${a.club}</span></div>
+        <div class="pmeta">From ${a.from}${a.detail ? ' &middot; ' + a.detail : ''}</div>
+      </div>
+      <div class="row">
+        <select data-tier="${i}">
+          <option value="first">First team</option>
+          <option value="best">Best player</option>
+          <option value="sub">Squad</option>
+          <option value="youth">Youth</option>
+        </select>
+        <input type="text" data-score="${i}" placeholder="score" style="width:74px" />
+        <button data-add="${i}">Add</button>
+      </div>
+    </div>`).join('') || '<div class="empty">No signings waiting to be weighted.</div>';
+  box.querySelectorAll('[data-add]').forEach(b => b.onclick = () => {
+    const i = Number(b.dataset.add);
+    const a = arrivals[i];
+    addPlayer(a.player, a.club, box.querySelector(`[data-tier="${i}"]`).value, box.querySelector(`[data-score="${i}"]`).value);
+  });
 }
 
 /* ---- render ---- */
@@ -233,10 +302,10 @@ function render() {
     <div class="result">
       <div>
         <div class="pname">${c.player}</div>
-        <div class="pmeta">${c.from} &rarr; ${c.to || 'out of the league'}</div>
+        <div class="pmeta">${c.add ? 'New signing &rarr; ' + c.to + ' &middot; ' + c.tier : c.from + ' &rarr; ' + (c.to || 'out of the league')}</div>
       </div>
       <div class="row">
-        <span class="tag ${c.to ? 'move' : 'out'}">${c.to ? 'Moved' : 'Removed'}</span>
+        <span class="tag ${c.add ? 'move' : c.to ? 'move' : 'out'}">${c.add ? 'Added' : c.to ? 'Moved' : 'Removed'}</span>
         <button data-undo="${i}">Undo</button>
       </div>
     </div>`).join('') : '<div class="empty">Nothing changed yet.</div>';
@@ -244,6 +313,7 @@ function render() {
   document.getElementById('count').textContent = pending.length + (pending.length === 1 ? ' change' : ' changes');
 
   renderSearch();
+  renderFeed();
 }
 
 function renderSearch() {
@@ -297,6 +367,7 @@ document.getElementById('download').onclick = () => {
 (async function init() {
   await loadSquadsCopy();
   try { fpl = await (await fetch('public/fpl-data.json', { cache: 'no-store' })).json(); } catch { fpl = null; }
+  try { transfers = await (await fetch('public/transfers.json', { cache: 'no-store' })).json(); } catch { transfers = null; }
   if (!fpl) document.getElementById('auto-note').textContent = 'Live FPL data unavailable - manual moves still work.';
   render();
 })();
