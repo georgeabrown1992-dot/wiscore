@@ -1,28 +1,40 @@
-name: Daily FPL data refresh
+name: Weekly FPL data refresh
 
 on:
   schedule:
+    # Daily at 06:00 UTC — adjust as needed
     - cron: '0 6 * * *'
-  workflow_dispatch:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
 
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Fetch FPL data
+
+      - name: Run fetch-fpl script
         run: node scripts/fetch-fpl.js
+
+      - name: Run transfer feed scrape
+        continue-on-error: true
+        run: node scripts/fetch-transfers.js
+
       - name: Commit updated data if changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add public/fpl-data.json public/gameweek-history.json public/squads.json public/transfers.json index.html
-          git add public/squad-alerts.json 2>/dev/null || true
+          for f in public/fpl-data.json public/gameweek-history.json public/squads.json \
+                   public/transfers.json public/transfer-feed.json public/squad-alerts.json \
+                   public/fixtures.json index.html; do
+            [ -f "$f" ] && git add "$f"
+          done
           if git diff --cached --quiet; then
             echo "No data changes — skipping commit."
             exit 0
