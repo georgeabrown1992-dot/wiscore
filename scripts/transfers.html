@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex, nofollow" />
+<title>WIscore | Transfer desk</title>
+<link rel="icon" href="public/favicon.svg" />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #0e0e10; --panel: #16161a; --panel-2: #1c1c20; --border: #2a2a2e;
+    --text: #f6f5f2; --text-dim: #b8b8b1; --text-mute: #8a8985;
+    --accent: #ff3d2e; --positive: #21e6a1; --amber: #caa23a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, sans-serif; font-size: 14px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { color: #ff6b5c; }
+  header { border-bottom: 1px solid var(--border); padding: 18px 24px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  h1 { font-family: 'Space Grotesk', sans-serif; font-size: 18px; margin: 0; letter-spacing: -0.01em; }
+  .sub { color: var(--text-mute); font-size: 12px; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 24px; display: grid; gap: 18px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 18px; }
+  .card h2 { font-family: 'Space Grotesk', sans-serif; font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); margin: 0 0 14px; }
+  input, select, button { font-family: inherit; font-size: 14px; }
+  input[type=text], select { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); border-radius: 4px; padding: 10px 12px; }
+  input[type=text] { width: 100%; }
+  button { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); border-radius: 4px; padding: 10px 14px; cursor: pointer; font-weight: 600; }
+  button:hover { border-color: #46453f; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { background: #ff5647; }
+  button.ghost { background: transparent; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .results { display: grid; gap: 8px; margin-top: 14px; }
+  .result { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 12px 14px; }
+  .pname { font-weight: 600; }
+  .pmeta { color: var(--text-mute); font-size: 12px; margin-top: 2px; }
+  .tag { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700; padding: 3px 8px; border-radius: 100px; background: rgba(138,137,133,0.16); color: var(--text-dim); }
+  .tag.move { background: rgba(33,230,161,0.14); color: var(--positive); }
+  .tag.out { background: rgba(255,61,46,0.14); color: #ff6b5c; }
+  .tag.check { background: rgba(202,162,58,0.14); color: var(--amber); }
+  .empty { color: var(--text-mute); padding: 14px 0; }
+  .pending { display: grid; gap: 8px; }
+  .pending .result { border-left: 2px solid var(--accent); }
+  .bar { position: sticky; bottom: 0; background: rgba(14,14,16,0.94); border-top: 1px solid var(--border); padding: 14px 24px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; backdrop-filter: blur(6px); }
+  .grow { flex: 1; }
+  .note { color: var(--text-mute); font-size: 12px; line-height: 1.5; }
+  code { background: var(--panel-2); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Transfer desk</h1>
+    <div class="sub">Move players between clubs or out of the league, then export <code>squads.json</code></div>
+  </div>
+  <div class="grow"></div>
+  <a href="index.html">&larr; Back to WIscore</a>
+</header>
+
+<div class="wrap">
+  <div class="card" id="auto-card">
+    <h2>Detected from live FPL data</h2>
+    <div class="note" id="auto-note">Loading&hellip;</div>
+    <div class="results" id="auto-list"></div>
+    <div class="row" style="margin-top:14px" id="auto-actions"></div>
+  </div>
+
+  <div class="card">
+    <h2>Confirmed deals from the transfer feed</h2>
+    <div class="note" id="feed-note">Loading&hellip;</div>
+    <div class="results" id="feed-list"></div>
+    <div class="note" style="margin-top:12px">
+      In-league moves and exits are applied by the nightly job. Incoming signings need a tier (and
+      optionally a 0.10&ndash;5.00 score) before they can affect a WIscore, so they wait here.
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Manual move</h2>
+    <input type="text" id="search" placeholder="Type a player name, e.g. Masuaku" autocomplete="off" />
+    <div class="results" id="search-list"></div>
+  </div>
+
+  <div class="card">
+    <h2>Pending changes</h2>
+    <div class="pending" id="pending"><div class="empty">Nothing changed yet.</div></div>
+  </div>
+
+  <div class="note">
+    Changes are held in this page only. Export the file, drop it into <code>public/squads.json</code> in the
+    GitHub repo and commit — the live site updates on the next deploy. The nightly job also applies the
+    detected moves automatically, so this page is only for anything it flags for review.
+  </div>
+</div>
+
+<div class="bar">
+  <span class="sub" id="count">0 changes</span>
+  <div class="grow"></div>
+  <button class="ghost" id="reset">Discard all</button>
+  <button id="copy">Copy JSON</button>
+  <button class="primary" id="download">Download squads.json</button>
+</div>
+
+<script>
+const strip = s => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase().replace(/[^a-z ]/g, ' ').replace(/\s+/g, ' ').trim();
+const DEPARTED_NEWS = /(has joined|joined on loan|on loan (at|to)|left the club|transferred|signed for)/i;
+const isDeparted = p => !!p && (p.status === 'u' || DEPARTED_NEWS.test(p.news || ''));
+
+let squads = null, fpl = null, transfers = null;
+const pending = [];
+
+function matchPlayer(name, pool) {
+  // Exact keys only - substring matching attached squad entries to the wrong player.
+  const pn = strip(name);
+  if (!pn) return null;
+  const keys = fp => [fp.web_name, fp.second_name, `${fp.first_name} ${fp.second_name}`,
+    `${fp.first_name} ${fp.web_name}`, `${fp.web_name} ${fp.second_name}`].map(strip);
+  let hits = pool.filter(fp => keys(fp).includes(pn));
+  if (!hits.length) hits = pool.filter(fp => strip(fp.second_name).split(' ').slice(-1)[0] === pn);
+  return hits.length === 1 ? hits[0] : null;
+}
+
+function ensurePlayers(c) {
+  if (!Array.isArray(c.players) || !c.players.length) {
+    c.players = [{ name: c.best, tier: 'best' }].concat(
+      (c.first || []).map(n => ({ name: n, tier: 'first' })),
+      (c.sub || []).map(n => ({ name: n, tier: 'sub' })),
+      (c.youth || []).map(n => ({ name: n, tier: 'youth' })));
+  }
+}
+
+function rebuildTiers(c) {
+  if (!c.players.some(p => p.tier === 'best')) {
+    const next = c.players.filter(p => p.tier === 'first').sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+    if (next) next.tier = 'best';
+  }
+  const byTier = t => c.players.filter(p => p.tier === t).sort((a, b) => (b.score || 0) - (a.score || 0)).map(p => p.name);
+  c.best = (c.players.find(p => p.tier === 'best') || {}).name || c.best;
+  c.first = byTier('first'); c.sub = byTier('sub'); c.youth = byTier('youth');
+}
+
+function teamFor(club) {
+  if (!fpl) return null;
+  return fpl.teams.find(t => t.name === club.name || t.short_name === club.short) || null;
+}
+
+/* ---- mutations ---- */
+function movePlayer(playerName, fromName, toName) {
+  const from = squads.clubs.find(c => c.name === fromName);
+  const to = toName ? squads.clubs.find(c => c.name === toName) : null;
+  const p = from && from.players.find(x => x.name === playerName);
+  if (!p) return;
+  from.players = from.players.filter(x => x !== p);
+  if (to) { to.players.push({ ...p, tier: p.tier === 'best' ? 'first' : p.tier }); rebuildTiers(to); }
+  rebuildTiers(from);
+  pending.push({ player: playerName, from: fromName, to: toName || null });
+  render();
+}
+
+function addPlayer(name, clubName, tier, score) {
+  const club = squads.clubs.find(c => c.name === clubName);
+  if (!club || club.players.some(p => strip(p.name) === strip(name))) return;
+  const entry = { name, tier };
+  if (score) entry.score = Number(score);
+  club.players.push(entry);
+  rebuildTiers(club);
+  pending.push({ player: name, from: null, to: clubName, add: true, tier, score: score ? Number(score) : undefined });
+  render();
+}
+
+function undo(i) {
+  const c = pending[i];
+  pending.splice(i, 1);
+  // replay from a clean copy so undo is always exact
+  const snapshot = pending.slice();
+  pending.length = 0;
+  loadSquadsCopy().then(() => { snapshot.forEach(c2 => movePlayerSilent(c2)); render(); });
+  function movePlayerSilent(c2) {
+    if (c2.add) {
+      const club = squads.clubs.find(x => x.name === c2.to);
+      if (club) { const e = { name: c2.player, tier: c2.tier }; if (c2.score) e.score = c2.score; club.players.push(e); rebuildTiers(club); }
+      pending.push(c2);
+      return;
+    }
+    const from = squads.clubs.find(x => x.name === c2.from);
+    const to = c2.to ? squads.clubs.find(x => x.name === c2.to) : null;
+    const p = from && from.players.find(x => x.name === c2.player);
+    if (!p) return;
+    from.players = from.players.filter(x => x !== p);
+    if (to) { to.players.push({ ...p, tier: p.tier === 'best' ? 'first' : p.tier }); rebuildTiers(to); }
+    rebuildTiers(from);
+    pending.push(c2);
+  }
+}
+
+async function loadSquadsCopy() {
+  const r = await fetch('public/squads.json', { cache: 'no-store' });
+  squads = await r.json();
+  squads.clubs.forEach(ensurePlayers);
+}
+
+/* ---- detection from live FPL ---- */
+function detect() {
+  if (!fpl || !squads) return [];
+  const clubOf = new Map();
+  squads.clubs.forEach(c => { const t = teamFor(c); if (t) clubOf.set(t.id, c); });
+  const found = [];
+  squads.clubs.forEach(club => {
+    const t = teamFor(club);
+    const pool = t ? fpl.players.filter(p => p.team === t.id) : [];
+    club.players.forEach(p => {
+      const inClub = matchPlayer(p.name, pool);
+      if (inClub && !isDeparted(inClub)) return;
+      const fp = inClub || matchPlayer(p.name, fpl.players);
+      if (!fp) { found.push({ kind: 'check', player: p.name, from: club.name, reason: 'Not found in FPL data - check spelling or confirm departure.' }); return; }
+      if (isDeparted(fp)) { found.push({ kind: 'out', player: p.name, from: club.name, reason: (fp.news || 'FPL lists this player as unavailable').trim() }); return; }
+      const dest = clubOf.get(fp.team);
+      if (dest && dest !== club) found.push({ kind: 'move', player: p.name, from: club.name, to: dest.name, reason: 'FPL now lists this player at ' + dest.name });
+    });
+  });
+  return found;
+}
+
+/* ---- arrivals read from the nightly transfer feed ---- */
+function renderFeed() {
+  const note = document.getElementById('feed-note');
+  const box = document.getElementById('feed-list');
+  if (!transfers) { note.textContent = 'No feed run recorded yet - the nightly job writes it.'; box.innerHTML = ''; return; }
+  const f = transfers.feed || {};
+  const applied = (transfers.moves || []).filter(m => m.source === 'transfer feed');
+  const left = (transfers.out || []).filter(o => /transfer feed/i.test(o.reason || ''));
+  const arrivals = (transfers.arrivals || []).filter(a => !squads.clubs.some(c => c.players.some(p => strip(p.name) === strip(a.player))));
+  note.innerHTML = (f.error ? `<span style="color:var(--amber)">Feed problem: ${f.error}</span><br />` : '')
+    + `${f.rows || 0} deals read${f.fetched_at ? ' | ' + new Date(f.fetched_at).toLocaleString('en-GB') : ''}`
+    + ` &middot; ${applied.length} moved, ${left.length} left the league, ${arrivals.length} signings to weight.`
+    + (f.source ? ` <a href="${f.source}" target="_blank" rel="noopener">Source</a>` : '');
+  box.innerHTML = arrivals.map((a, i) => `
+    <div class="result">
+      <div>
+        <div class="pname">${a.player} <span class="sub">&rarr; ${a.club}</span></div>
+        <div class="pmeta">From ${a.from}${a.detail ? ' &middot; ' + a.detail : ''}</div>
+      </div>
+      <div class="row">
+        <select data-tier="${i}">
+          <option value="first">First team</option>
+          <option value="best">Best player</option>
+          <option value="sub">Squad</option>
+          <option value="youth">Youth</option>
+        </select>
+        <input type="text" data-score="${i}" placeholder="score" style="width:74px" />
+        <button data-add="${i}">Add</button>
+      </div>
+    </div>`).join('') || '<div class="empty">No signings waiting to be weighted.</div>';
+  box.querySelectorAll('[data-add]').forEach(b => b.onclick = () => {
+    const i = Number(b.dataset.add);
+    const a = arrivals[i];
+    addPlayer(a.player, a.club, box.querySelector(`[data-tier="${i}"]`).value, box.querySelector(`[data-score="${i}"]`).value);
+  });
+}
+
+/* ---- render ---- */
+function clubOptions(selected) {
+  return ['<option value="">Out of the league</option>'].concat(
+    squads.clubs.map(c => `<option value="${c.name}"${c.name === selected ? ' selected' : ''}>${c.name}</option>`)
+  ).join('');
+}
+
+function render() {
+  // detected
+  const list = document.getElementById('auto-list');
+  const actions = document.getElementById('auto-actions');
+  const items = detect();
+  const actionable = items.filter(i => i.kind !== 'check');
+  document.getElementById('auto-note').textContent = items.length
+    ? `${actionable.length} change${actionable.length === 1 ? '' : 's'} FPL data suggests, ${items.filter(i => i.kind === 'check').length} to check by hand.`
+    : 'Every squad matches the live FPL data. Nothing to do.';
+  list.innerHTML = items.map((i, n) => `
+    <div class="result">
+      <div>
+        <div class="pname">${i.player} <span class="sub">${i.from}${i.to ? ' &rarr; ' + i.to : ''}</span></div>
+        <div class="pmeta">${i.reason}</div>
+      </div>
+      <div class="row">
+        <span class="tag ${i.kind}">${i.kind === 'move' ? 'Move' : i.kind === 'out' ? 'Remove' : 'Check'}</span>
+        ${i.kind === 'check' ? '' : `<button data-apply="${n}">Apply</button>`}
+      </div>
+    </div>`).join('') || '<div class="empty">No differences found.</div>';
+  list.querySelectorAll('[data-apply]').forEach(b => b.onclick = () => {
+    const i = items[Number(b.dataset.apply)];
+    movePlayer(i.player, i.from, i.to || null);
+  });
+  actions.innerHTML = actionable.length ? '<button class="primary" id="apply-all">Apply all ' + actionable.length + '</button>' : '';
+  const all = document.getElementById('apply-all');
+  if (all) all.onclick = () => { actionable.forEach(i => movePlayer(i.player, i.from, i.to || null)); };
+
+  // pending
+  const pend = document.getElementById('pending');
+  pend.innerHTML = pending.length ? pending.map((c, i) => `
+    <div class="result">
+      <div>
+        <div class="pname">${c.player}</div>
+        <div class="pmeta">${c.add ? 'New signing &rarr; ' + c.to + ' &middot; ' + c.tier : c.from + ' &rarr; ' + (c.to || 'out of the league')}</div>
+      </div>
+      <div class="row">
+        <span class="tag ${c.add ? 'move' : c.to ? 'move' : 'out'}">${c.add ? 'Added' : c.to ? 'Moved' : 'Removed'}</span>
+        <button data-undo="${i}">Undo</button>
+      </div>
+    </div>`).join('') : '<div class="empty">Nothing changed yet.</div>';
+  pend.querySelectorAll('[data-undo]').forEach(b => b.onclick = () => undo(Number(b.dataset.undo)));
+  document.getElementById('count').textContent = pending.length + (pending.length === 1 ? ' change' : ' changes');
+
+  renderSearch();
+  renderFeed();
+}
+
+function renderSearch() {
+  const q = strip(document.getElementById('search').value);
+  const box = document.getElementById('search-list');
+  if (!q || q.length < 2) { box.innerHTML = '<div class="empty">Search a player to move them.</div>'; return; }
+  const hits = [];
+  squads.clubs.forEach(c => c.players.forEach(p => { if (strip(p.name).includes(q)) hits.push({ p, c }); }));
+  box.innerHTML = hits.slice(0, 12).map(({ p, c }, i) => `
+    <div class="result">
+      <div>
+        <div class="pname">${p.name}</div>
+        <div class="pmeta">${c.name} &middot; ${p.tier}${p.score ? ' &middot; ' + p.score : ''}</div>
+      </div>
+      <div class="row">
+        <select data-dest="${i}">${clubOptions(c.name)}</select>
+        <button data-go="${i}">Apply</button>
+      </div>
+    </div>`).join('') || '<div class="empty">No player by that name.</div>';
+  box.querySelectorAll('[data-go]').forEach(b => b.onclick = () => {
+    const i = Number(b.dataset.go);
+    const { p, c } = hits[i];
+    const dest = box.querySelector(`[data-dest="${i}"]`).value;
+    if (dest === c.name) return;
+    movePlayer(p.name, c.name, dest || null);
+  });
+}
+
+function exportJson() {
+  squads.generated = new Date().toISOString();
+  squads.notes = (squads.notes || '') ;
+  return JSON.stringify(squads, null, 2);
+}
+
+document.getElementById('search').addEventListener('input', renderSearch);
+document.getElementById('reset').onclick = async () => { pending.length = 0; await loadSquadsCopy(); render(); };
+document.getElementById('copy').onclick = async () => {
+  await navigator.clipboard.writeText(exportJson());
+  document.getElementById('copy').textContent = 'Copied';
+  setTimeout(() => document.getElementById('copy').textContent = 'Copy JSON', 1400);
+};
+document.getElementById('download').onclick = () => {
+  const blob = new Blob([exportJson()], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'squads.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+(async function init() {
+  await loadSquadsCopy();
+  try { fpl = await (await fetch('public/fpl-data.json', { cache: 'no-store' })).json(); } catch { fpl = null; }
+  try { transfers = await (await fetch('public/transfers.json', { cache: 'no-store' })).json(); } catch { transfers = null; }
+  if (!fpl) document.getElementById('auto-note').textContent = 'Live FPL data unavailable - manual moves still work.';
+  render();
+})();
+</script>
+</body>
+</html>
