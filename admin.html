@@ -1,0 +1,1120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>WIscore — Backend</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #0b0b0d; --panel: #16161a; --elevated: #1e1e23; --border: rgba(255,255,255,0.08);
+    --text: #f7f7f4; --text-dim: #9a9a94; --text-mute: #6d6d68;
+    --accent: #ff3d2e; --accent-dim: rgba(255,61,46,0.15);
+    --font-display: 'Space Grotesk', sans-serif; --font-body: 'Inter', sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family: var(--font-body); }
+  a { color: var(--accent); } a:hover { color: #ff6a5e; }
+  .shell { display: flex; min-height: 100vh; }
+  .sidebar { width: 220px; flex-shrink: 0; background: var(--panel); border-right: 1px solid var(--border); padding: 22px 16px; position: sticky; top: 0; height: 100vh; }
+  .sidebar-brand { font-family: var(--font-display); font-weight: 700; font-size: 18px; text-transform: uppercase; letter-spacing: 0.02em; }
+  .sidebar-sub { font-size: 11px; color: var(--text-dim); margin: 4px 0 22px; line-height: 1.4; }
+  .side-link { padding: 10px 12px; border-radius: 6px; color: var(--text-dim); font-weight: 600; font-size: 14px; cursor: pointer; margin-bottom: 2px; display: flex; align-items: center; justify-content: space-between; }
+  .side-link:hover { background: rgba(255,255,255,0.05); color: var(--text); }
+  .side-link.active { background: var(--accent-dim); color: var(--accent); }
+  .side-badge { background: var(--accent); color: white; font-size: 10px; font-weight: 700; border-radius: 100px; padding: 1px 7px; }
+  .main { flex: 1; padding: 32px 40px; max-width: 1100px; }
+  .page-title { font-family: var(--font-display); font-size: 24px; margin: 0 0 4px; }
+  .page-sub { color: var(--text-dim); font-size: 13px; margin: 0 0 24px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 20px 22px; margin-bottom: 16px; }
+  .card h2 { margin: 0 0 12px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); font-weight: 600; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  select, input[type=text], input[type=password], input[type=number], input[type=search], input[type=file], textarea {
+    background: var(--elevated); border: 1px solid var(--border); color: var(--text);
+    padding: 8px 12px; border-radius: 4px; font-size: 14px; font-family: inherit;
+  }
+  textarea { width: 100%; min-height: 70px; }
+  button { background: var(--accent); color: white; border: none; padding: 9px 16px; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 13px; }
+  button.secondary { background: var(--elevated); border: 1px solid var(--border); color: var(--text); }
+  button.danger { background: transparent; border: 1px solid #a3160f; color: #ff8b8b; }
+  button:hover { opacity: 0.88; }
+  table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  th { color: var(--text-dim); text-transform: uppercase; font-size: 10px; letter-spacing: 0.05em; }
+  .empty { color: var(--text-dim); padding: 30px; text-align: center; font-size: 14px; }
+  .help { color: var(--text-dim); font-size: 13px; line-height: 1.6; margin-bottom: 14px; }
+  .help code { background: var(--elevated); padding: 1px 6px; border-radius: 3px; font-size: 12px; }
+  .flex-between { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .tag { display: inline-block; padding: 2px 9px; border-radius: 100px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
+  .tag.tier-best { background: #a3160f; } .tag.tier-first { background: #ea4527; } .tag.tier-sub { background: #d9822a; color: #1a1a1a; } .tag.tier-youth { background: #caa23a; color: #1a1a1a; }
+  .tag.status-live { background: #2f8f4e; } .tag.status-stale { background: var(--elevated); color: var(--text-dim); }
+  .featured-tag { background: var(--accent); color: white; font-weight: 700; padding: 2px 8px; border-radius: 100px; font-size: 10px; margin-left: 8px; }
+  .alert-block { border-left: 3px solid var(--accent); background: var(--accent-dim); padding: 12px 16px; border-radius: 4px; margin-bottom: 12px; font-size: 13px; }
+  .alert-block strong { display: block; margin-bottom: 4px; }
+  .step-note { font-size: 12px; color: var(--text-mute); margin-top: 10px; }
+  .load-status { font-size: 12px; color: var(--text-dim); }
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="sidebar">
+    <div class="sidebar-brand">WIscore</div>
+    <div class="sidebar-sub">Backend editor. Edits happen in your browser only — nothing is sent anywhere until you export and commit.</div>
+    <div class="side-link active" data-tab="players">Players</div>
+    <div class="side-link" data-tab="squads">Squads &amp; tiers</div>
+    <div class="side-link" data-tab="alerts">Squad alerts <span class="side-badge" id="alertCount" style="display:none">0</span></div>
+    <div class="side-link" data-tab="transfers">Transfers <span class="side-badge" id="transferCount" style="display:none">0</span></div>
+    <div class="side-link" data-tab="injuries">Injury status</div>
+    <div class="side-link" data-tab="insights">Insights articles</div>
+    <div class="side-link" data-tab="publish">Publishing</div>
+  </div>
+  <div class="main">
+
+    <div id="page-players" class="page">
+      <h1 class="page-title">Players</h1>
+      <p class="page-sub">Search any player and edit club, tier, injury weight, status and news in one place.</p>
+      <div class="card">
+        <h2>1. Load data</h2>
+        <div class="help">Loads <code>public/squads.json</code> and <code>public/fpl-data.json</code> together and matches players across both.</div>
+        <div class="row">
+          <button id="autoLoadPlayers">Load current live data</button>
+        </div>
+        <div class="load-status" id="playersStatus"></div>
+      </div>
+      <div id="playersEditor"></div>
+    </div>
+
+    <div id="page-squads" class="page" style="display:none">
+      <h1 class="page-title">Squads &amp; tiers</h1>
+      <p class="page-sub">Edit each club's player list, tier (best / first / sub / youth) and per-player weight.</p>
+      <div class="card">
+        <h2>1. Load data</h2>
+        <div class="help">Loads <code>public/squads.json</code> from this same site. If you're editing offline, use the file picker instead.</div>
+        <div class="row">
+          <button id="autoLoadSquads">Load current live squads.json</button>
+          <input type="file" id="squadsFile" accept="application/json" />
+        </div>
+        <div class="load-status" id="squadsStatus"></div>
+      </div>
+      <div id="squadsEditor"></div>
+    </div>
+
+    <div id="page-alerts" class="page" style="display:none">
+      <h1 class="page-title">Squad alerts</h1>
+      <p class="page-sub">Auto-generated daily by the FPL refresh workflow — flags transfers so tiers don't go stale.</p>
+      <div class="card">
+        <h2>1. Load alerts</h2>
+        <div class="help">Loads <code>public/squad-alerts.json</code>, written automatically each day the refresh workflow runs.</div>
+        <div class="row">
+          <button id="autoLoadAlerts">Load current live squad-alerts.json</button>
+          <input type="file" id="alertsFile" accept="application/json" />
+        </div>
+        <div class="load-status" id="alertsStatus"></div>
+      </div>
+      <div id="alertsEditor"></div>
+    </div>
+
+    <div id="page-transfers" class="page" style="display:none">
+      <h1 class="page-title">Transfers</h1>
+      <p class="page-sub">Same tools as the Transfer desk, plus every player carrying no weight. Moves, exits and new signings all edit the squads.json you export below.</p>
+      <div class="card">
+        <h2>1. Load data</h2>
+        <div class="help">Loads <code>public/squads.json</code>, <code>public/fpl-data.json</code> and the nightly <code>public/transfers.json</code> feed log.</div>
+        <div class="row">
+          <button id="autoLoadTransfers">Load current live data</button>
+        </div>
+        <div class="load-status" id="transfersStatus"></div>
+      </div>
+      <div id="transfersEditor"></div>
+    </div>
+
+    <div id="page-publish" class="page" style="display:none">
+      <h1 class="page-title">Publishing</h1>
+      <p class="page-sub">Set this up once and every editor tab gets a <b>Publish to live site</b> button that commits straight to the repo — no downloading, no re-uploading.</p>
+      <div class="card">
+        <h2>Connection</h2>
+        <div class="help">
+          <b>Recommended:</b> leave this on <i>Netlify function</i>. The GitHub token then lives in Netlify's environment
+          variables (<code>GITHUB_TOKEN</code>, <code>GITHUB_REPO</code>, <code>ADMIN_SECRET</code>) and never touches this browser.
+          Use <i>GitHub token in this browser</i> only if you can't add the function — the token is then stored in this
+          browser's local storage, on this device.
+        </div>
+        <div class="row" style="margin-top:12px">
+          <select id="pubMode">
+            <option value="function">Netlify function (recommended)</option>
+            <option value="github">GitHub token in this browser</option>
+          </select>
+        </div>
+        <div id="pubFunctionFields" style="margin-top:12px">
+          <div class="row">
+            <label>Function URL <input type="text" id="pubFnUrl" placeholder="/.netlify/functions/commit" style="width:300px" /></label>
+            <label>Passphrase <input type="password" id="pubSecret" placeholder="matches ADMIN_SECRET" style="width:200px" /></label>
+          </div>
+        </div>
+        <div id="pubGithubFields" style="margin-top:12px; display:none">
+          <div class="row">
+            <label>Repo <input type="text" id="pubRepo" placeholder="yourname/wiscore" style="width:220px" /></label>
+            <label>Branch <input type="text" id="pubBranch" placeholder="main" style="width:110px" /></label>
+            <label>Token <input type="password" id="pubToken" placeholder="github_pat_…" style="width:250px" /></label>
+          </div>
+          <div class="help" style="margin-top:8px">Fine-grained PAT, this repo only, <b>Contents: read &amp; write</b>. Nothing else.</div>
+        </div>
+        <div class="row" style="margin-top:14px">
+          <button id="pubSave">Save settings</button>
+          <button class="secondary" id="pubTest">Test connection</button>
+          <button class="danger" id="pubForget">Forget settings</button>
+        </div>
+        <div class="load-status" id="pubStatus"></div>
+      </div>
+      <div class="card">
+        <h2>One-time setup (Netlify function)</h2>
+        <div class="help">
+          1. Commit <code>netlify/functions/commit.js</code> and <code>netlify.toml</code> to the repo this admin site deploys from.<br />
+          2. In Netlify &rarr; Site configuration &rarr; Environment variables, add <code>GITHUB_TOKEN</code> (fine-grained PAT,
+          Contents: read &amp; write), <code>GITHUB_REPO</code> (<code>owner/name</code>), <code>GITHUB_BRANCH</code> (usually <code>main</code>)
+          and <code>ADMIN_SECRET</code> (any passphrase you choose).<br />
+          3. Redeploy, put the same passphrase in the box above, hit <b>Test connection</b>.
+        </div>
+      </div>
+      <div class="card">
+        <h2>Recent publishes</h2>
+        <div id="pubLog"><div class="empty">Nothing published from this browser yet.</div></div>
+      </div>
+      <div class="card">
+        <h2>What still runs on its own</h2>
+        <div class="help">
+          The nightly job refreshes injuries, squad moves, gameweek history and the transfer feed without you —
+          publishing is only for hand edits made here. A publish commits one file, Netlify redeploys in about a
+          minute, and the live site serves it on the next load.
+        </div>
+      </div>
+    </div>
+
+    <div id="page-injuries" class="page" style="display:none">
+      <h1 class="page-title">Injury status</h1>
+      <p class="page-sub">Search a player and set status: <b>a</b> available, <b>i</b> injured, <b>s</b> suspended, <b>d</b> doubtful, <b>u</b> unavailable.</p>
+      <div class="card">
+        <h2>1. Load data</h2>
+        <div class="help">Loads <code>public/fpl-data.json</code> from this same site.</div>
+        <div class="row">
+          <button id="autoLoadFpl">Load current live fpl-data.json</button>
+          <input type="file" id="fplFile" accept="application/json" />
+        </div>
+        <div class="load-status" id="fplStatus"></div>
+      </div>
+      <div id="injuriesEditor"></div>
+    </div>
+
+    <div id="page-insights" class="page" style="display:none">
+      <h1 class="page-title">Insights articles</h1>
+      <p class="page-sub">Write, edit and feature the articles shown on the Insights page.</p>
+      <div class="card">
+        <h2>1. Load data</h2>
+        <div class="help">Loads <code>public/insights.json</code> from this same site, or start a fresh one.</div>
+        <div class="row">
+          <button id="autoLoadInsights">Load current live insights.json</button>
+          <input type="file" id="insightsFile" accept="application/json" />
+          <button class="secondary" id="newInsights">Start new insights.json</button>
+        </div>
+        <div class="load-status" id="insightsStatus"></div>
+      </div>
+      <div id="insightsEditor"></div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+let squadsData = null, fplData = null, insightsData = null, alertsData = null;
+
+document.querySelectorAll('.side-link').forEach(t => t.addEventListener('click', () => {
+  document.querySelectorAll('.side-link').forEach(x => x.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(x => x.style.display = 'none');
+  t.classList.add('active');
+  document.getElementById('page-' + t.dataset.tab).style.display = 'block';
+}));
+
+function download(filename, obj) {
+  const blob = new Blob([JSON.stringify(obj, null, 0)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+}
+
+/* ---------------- PUBLISHING (commit straight to the repo) ---------------- */
+const PUB_KEY = 'wi_publish_cfg';
+const PUB_LOG_KEY = 'wi_publish_log';
+const pubCfg = () => { try { return JSON.parse(localStorage.getItem(PUB_KEY)) || {}; } catch { return {}; } };
+const pubReady = () => {
+  const c = pubCfg();
+  return c.mode === 'github' ? !!(c.repo && c.token) : !!(c.fnUrl || c.mode === 'function');
+};
+const b64 = str => btoa(String.fromCharCode(...new TextEncoder().encode(str)));
+
+async function publishFile(path, obj, message) {
+  const c = pubCfg();
+  const content = JSON.stringify(obj, null, 0);
+  if (c.mode === 'github') {
+    if (!c.repo || !c.token) throw new Error('Add your repo and token on the Publishing tab first.');
+    const branch = c.branch || 'main';
+    const api = `https://api.github.com/repos/${c.repo}/contents/${path}`;
+    const headers = { Authorization: 'Bearer ' + c.token, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
+    let sha;
+    const head = await fetch(`${api}?ref=${encodeURIComponent(branch)}`, { headers });
+    if (head.ok) sha = (await head.json()).sha;
+    else if (head.status === 401 || head.status === 403) throw new Error('GitHub rejected the token (check Contents: read & write).');
+    else if (head.status !== 404) throw new Error('GitHub read failed: ' + head.status);
+    const put = await fetch(api, {
+      method: 'PUT', headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: message || 'admin: update ' + path, content: b64(content), branch, ...(sha ? { sha } : {}) }),
+    });
+    const out = await put.json();
+    if (!put.ok) throw new Error(out.message || 'GitHub write failed: ' + put.status);
+    return { url: out.commit && out.commit.html_url, commit: out.commit && out.commit.sha };
+  }
+  const url = c.fnUrl || '/.netlify/functions/commit';
+  const res = await fetch(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, content, message: message || 'admin: update ' + path, secret: c.secret || '' }),
+  });
+  const out = await res.json().catch(() => ({}));
+  if (!res.ok || out.error) throw new Error(out.error || 'Publish failed: ' + res.status);
+  return out;
+}
+
+function pubLogAdd(entry) {
+  let log = [];
+  try { log = JSON.parse(localStorage.getItem(PUB_LOG_KEY)) || []; } catch { log = []; }
+  log.unshift(entry);
+  localStorage.setItem(PUB_LOG_KEY, JSON.stringify(log.slice(0, 25)));
+  renderPubLog();
+}
+
+function renderPubLog() {
+  const el = document.getElementById('pubLog');
+  if (!el) return;
+  let log = [];
+  try { log = JSON.parse(localStorage.getItem(PUB_LOG_KEY)) || []; } catch { log = []; }
+  el.innerHTML = log.length
+    ? `<table><thead><tr><th>When</th><th>File</th><th>Result</th></tr></thead><tbody>${log.map(l => `<tr>
+        <td>${new Date(l.at).toLocaleString('en-GB')}</td>
+        <td><code>${l.path}</code></td>
+        <td>${l.ok ? (l.url ? `<a href="${l.url}" target="_blank" rel="noopener">committed</a>` : 'committed') : `<span style="color:#ff8b8b">${l.error}</span>`}</td>
+      </tr>`).join('')}</tbody></table>`
+    : '<div class="empty">Nothing published from this browser yet.</div>';
+}
+
+/* Adds a "Publish to live site" button next to a download button. */
+function attachPublish(container, path, getObj, label) {
+  const btn = document.createElement('button');
+  btn.textContent = label || ('Publish ' + path.split('/').pop() + ' to live site');
+  const status = document.createElement('span');
+  status.className = 'load-status';
+  status.style.marginLeft = '10px';
+  btn.addEventListener('click', async () => {
+    const obj = getObj();
+    if (!obj) { status.textContent = 'Nothing loaded to publish.'; return; }
+    btn.disabled = true; status.textContent = 'Publishing…';
+    try {
+      const out = await publishFile(path, obj);
+      status.innerHTML = '✓ Committed — live in about a minute.' + (out.url ? ` <a href="${out.url}" target="_blank" rel="noopener">View commit</a>` : '');
+      pubLogAdd({ at: new Date().toISOString(), path, ok: true, url: out.url });
+    } catch (err) {
+      status.textContent = String(err.message || err);
+      pubLogAdd({ at: new Date().toISOString(), path, ok: false, error: String(err.message || err) });
+    }
+    btn.disabled = false;
+  });
+  container.appendChild(btn);
+  container.appendChild(status);
+  if (!pubReady()) status.textContent = 'Set up the Publishing tab to enable this.';
+  return btn;
+}
+
+(function initPublishTab() {
+  const c = pubCfg();
+  const $ = id => document.getElementById(id);
+  $('pubMode').value = c.mode || 'function';
+  $('pubFnUrl').value = c.fnUrl || '';
+  $('pubSecret').value = c.secret || '';
+  $('pubRepo').value = c.repo || '';
+  $('pubBranch').value = c.branch || '';
+  $('pubToken').value = c.token || '';
+  const sync = () => {
+    const gh = $('pubMode').value === 'github';
+    $('pubGithubFields').style.display = gh ? 'block' : 'none';
+    $('pubFunctionFields').style.display = gh ? 'none' : 'block';
+  };
+  $('pubMode').addEventListener('change', sync); sync();
+  $('pubSave').addEventListener('click', () => {
+    localStorage.setItem(PUB_KEY, JSON.stringify({
+      mode: $('pubMode').value, fnUrl: $('pubFnUrl').value.trim(), secret: $('pubSecret').value,
+      repo: $('pubRepo').value.trim(), branch: $('pubBranch').value.trim(), token: $('pubToken').value.trim(),
+    }));
+    $('pubStatus').textContent = '✓ Saved on this device. Publish buttons are live on the other tabs.';
+  });
+  $('pubForget').addEventListener('click', () => {
+    localStorage.removeItem(PUB_KEY);
+    ['pubFnUrl', 'pubSecret', 'pubRepo', 'pubBranch', 'pubToken'].forEach(id => $(id).value = '');
+    $('pubStatus').textContent = 'Settings cleared from this browser.';
+  });
+  $('pubTest').addEventListener('click', async () => {
+    const cfg = pubCfg();
+    $('pubStatus').textContent = 'Testing…';
+    try {
+      if (cfg.mode === 'github') {
+        const r = await fetch(`https://api.github.com/repos/${cfg.repo}/contents/public/squads.json?ref=${cfg.branch || 'main'}`,
+          { headers: { Authorization: 'Bearer ' + cfg.token, Accept: 'application/vnd.github+json' } });
+        $('pubStatus').textContent = r.ok ? '✓ Token can read the repo — writes should work.' : 'GitHub said ' + r.status + '. Check repo name, branch and token scope.';
+      } else {
+        const r = await fetch(cfg.fnUrl || '/.netlify/functions/commit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ secret: cfg.secret || '' }) });
+        const out = await r.json().catch(() => ({}));
+        $('pubStatus').textContent = r.status === 400 && /path not allowed/i.test(out.error || '')
+          ? '✓ Function reachable and passphrase accepted.'
+          : (out.error || 'Function replied ' + r.status);
+      }
+    } catch (err) { $('pubStatus').textContent = String(err.message || err); }
+  });
+  renderPubLog();
+})();
+
+async function autoLoad(path, statusEl) {
+  statusEl.textContent = 'Loading…';
+  const SITE_BASE = 'https://wiscore.co/';
+  try {
+    const res = await fetch(SITE_BASE + path + '?t=' + Date.now());
+    if (!res.ok) throw new Error(res.status);
+    const data = await res.json();
+    statusEl.textContent = '✓ Loaded live ' + path;
+    return data;
+  } catch (err) {
+    statusEl.textContent = 'Could not fetch ' + path + ' — check the site is live, or use the file picker instead.';
+    return null;
+  }
+}
+
+/* ---------------- PLAYERS (merged squads + injuries) ---------------- */
+function norm(s) { return (s || '').toLowerCase().replace(/[^a-z]/g, ''); }
+
+document.getElementById('autoLoadPlayers').addEventListener('click', async () => {
+  const statusEl = document.getElementById('playersStatus');
+  const [sq, fpl] = await Promise.all([
+    autoLoad('public/squads.json', statusEl),
+    autoLoad('public/fpl-data.json', statusEl),
+  ]);
+  if (sq) squadsData = sq;
+  if (fpl) fplData = fpl;
+  if (sq && fpl) { statusEl.textContent = '✓ Loaded live squads.json + fpl-data.json'; renderPlayers(); }
+});
+
+function buildPlayerRows() {
+  const rows = [];
+  squadsData.clubs.forEach(club => {
+    const team = fplData.teams.find(t => t.name === club.name || t.short_name === club.short);
+    const teamPlayers = team ? fplData.players.filter(p => p.team === team.id) : [];
+    (club.players || []).forEach(p => {
+      const match = teamPlayers.find(fp => {
+        const pn = norm(p.name);
+        return [fp.web_name, fp.second_name, fp.first_name + ' ' + fp.second_name].map(norm).includes(pn);
+      }) || null;
+      rows.push({ club, squadPlayer: p, fplPlayer: match || null });
+    });
+  });
+  return rows;
+}
+
+function renderPlayers() {
+  const el = document.getElementById('playersEditor');
+  if (!squadsData || !fplData) { el.innerHTML = ''; return; }
+  el.innerHTML = '';
+
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML = `<h2>2. Search a player</h2>`;
+  const search = document.createElement('input');
+  search.type = 'search'; search.placeholder = 'Type a player or club name…'; search.style.width = '280px';
+  card.appendChild(search);
+  el.appendChild(card);
+
+  const resultsCard = document.createElement('div');
+  resultsCard.className = 'card';
+  el.appendChild(resultsCard);
+
+  const allRows = buildPlayerRows();
+
+  function renderResults(filter) {
+    resultsCard.innerHTML = '';
+    const f = filter.trim().toLowerCase();
+    const rows = f ? allRows.filter(r => r.squadPlayer.name.toLowerCase().includes(f) || r.club.name.toLowerCase().includes(f)) : allRows.slice(0, 30);
+    if (!f) resultsCard.insertAdjacentHTML('beforeend', '<div class="help">Showing first 30 players — search to narrow down.</div>');
+    if (!rows.length) { resultsCard.insertAdjacentHTML('beforeend', '<div class="empty">No matches.</div>'); return; }
+    const table = document.createElement('table');
+    table.innerHTML = `<thead><tr><th>Player</th><th>Club</th><th>Tier</th><th>Weight</th><th>Status</th><th>Chance %</th><th>News</th></tr></thead>`;
+    const tbody = document.createElement('tbody');
+    rows.forEach(r => {
+      const { club, squadPlayer: p, fplPlayer: fp } = r;
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><strong>${p.name}</strong>${!fp ? '<div style="color:var(--text-mute);font-size:11px">No FPL match</div>' : ''}</td>
+        <td>${club.name}</td>
+        <td>
+          <select data-field="tier">
+            ${['best','first','sub','youth'].map(t => `<option value="${t}" ${p.tier===t?'selected':''}>${t}</option>`).join('')}
+          </select>
+        </td>
+        <td><input type="number" step="0.01" value="${p.score}" data-field="score" style="width:70px"/></td>
+        <td>
+          <select data-field="status" ${!fp ? 'disabled' : ''}>
+            ${['a','i','d','s','u'].map(s => `<option value="${s}" ${fp && fp.status===s?'selected':''}>${s}</option>`).join('')}
+          </select>
+        </td>
+        <td><input type="number" data-field="chance" value="${fp && fp.chance_this != null ? fp.chance_this : ''}" style="width:60px" placeholder="—" ${!fp ? 'disabled' : ''}/></td>
+        <td><input type="text" data-field="news" value="${fp ? (fp.news||'') : ''}" style="width:200px" placeholder="e.g. Hamstring injury" ${!fp ? 'disabled' : ''}/></td>
+      `;
+      tr.querySelector('[data-field=tier]').addEventListener('change', e => p.tier = e.target.value);
+      tr.querySelector('[data-field=score]').addEventListener('input', e => p.score = parseFloat(e.target.value) || 0);
+      if (fp) {
+        tr.querySelector('[data-field=status]').addEventListener('change', e => fp.status = e.target.value);
+        tr.querySelector('[data-field=chance]').addEventListener('input', e => fp.chance_this = e.target.value === '' ? null : parseInt(e.target.value));
+        tr.querySelector('[data-field=news]').addEventListener('input', e => fp.news = e.target.value);
+      }
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    resultsCard.appendChild(table);
+  }
+  search.addEventListener('input', () => renderResults(search.value));
+  renderResults('');
+
+  const exportCard = document.createElement('div');
+  exportCard.className = 'card';
+  exportCard.innerHTML = `<h2>3. Export</h2><div class="help">Downloads both updated files. Replace <code>public/squads.json</code> and <code>public/fpl-data.json</code> in GitHub and commit — Netlify redeploys. Note: the next daily refresh will overwrite manual status/news edits with live FPL data (tier/weight edits are untouched by automation).</div>`;
+  const row = document.createElement('div');
+  row.className = 'row';
+  const btn1 = document.createElement('button');
+  btn1.textContent = 'Download squads.json';
+  btn1.addEventListener('click', () => download('squads.json', squadsData));
+  const btn2 = document.createElement('button');
+  btn2.textContent = 'Download fpl-data.json';
+  btn2.addEventListener('click', () => { fplData._synthetic = false; fplData.fetched_at = new Date().toISOString(); download('fpl-data.json', fplData); });
+  row.appendChild(btn1); row.appendChild(btn2);
+  exportCard.appendChild(row);
+  const pubRow = document.createElement('div');
+  pubRow.className = 'row';
+  pubRow.style.marginTop = '10px';
+  attachPublish(pubRow, 'public/squads.json', () => squadsData, 'Publish squads.json');
+  exportCard.appendChild(pubRow);
+  const pubRow2 = document.createElement('div');
+  pubRow2.className = 'row';
+  pubRow2.style.marginTop = '8px';
+  attachPublish(pubRow2, 'public/fpl-data.json', () => fplData, 'Publish fpl-data.json');
+  exportCard.appendChild(pubRow2);
+  el.appendChild(exportCard);
+}
+
+/* ---------------- SQUADS ---------------- */
+document.getElementById('autoLoadSquads').addEventListener('click', async () => {
+  const d = await autoLoad('public/squads.json', document.getElementById('squadsStatus'));
+  if (d) { squadsData = d; renderSquads(); }
+});
+document.getElementById('squadsFile').addEventListener('change', e => {
+  const f = e.target.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = () => { squadsData = JSON.parse(r.result); document.getElementById('squadsStatus').textContent = '✓ Loaded ' + f.name; renderSquads(); };
+  r.readAsText(f);
+});
+
+function clubTotal(club) { return club.players.reduce((s,p)=>s+p.score,0); }
+
+function renderSquads() {
+  const el = document.getElementById('squadsEditor');
+  if (!squadsData) { el.innerHTML = ''; return; }
+  el.innerHTML = '';
+
+  const picker = document.createElement('div');
+  picker.className = 'card';
+  picker.innerHTML = `<h2>2. Pick a club</h2>`;
+  const sel = document.createElement('select');
+  squadsData.clubs.forEach((c,i) => {
+    const opt = document.createElement('option');
+    opt.value = i; opt.textContent = `${c.name} (${c.players.length} players, ${clubTotal(c).toFixed(2)} total)`;
+    sel.appendChild(opt);
+  });
+  picker.appendChild(sel);
+  el.appendChild(picker);
+
+  const editorCard = document.createElement('div');
+  editorCard.className = 'card';
+  el.appendChild(editorCard);
+
+  function renderClub(idx) {
+    const club = squadsData.clubs[idx];
+    editorCard.innerHTML = '';
+    const header = document.createElement('div');
+    header.className = 'flex-between';
+    header.innerHTML = `<h2 style="margin:0">${club.name} — ${club.players.length} players — total ${clubTotal(club).toFixed(2)} / 65.00</h2>`;
+    editorCard.appendChild(header);
+
+    const table = document.createElement('table');
+    table.innerHTML = `<thead><tr><th>Name</th><th>Tier</th><th>Weight</th><th></th></tr></thead>`;
+    const tbody = document.createElement('tbody');
+    club.players.forEach((p, pi) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><input type="text" value="${p.name}" data-field="name" style="width:160px"/></td>
+        <td>
+          <select data-field="tier">
+            ${['best','first','sub','youth'].map(t => `<option value="${t}" ${p.tier===t?'selected':''}>${t}</option>`).join('')}
+          </select>
+        </td>
+        <td><input type="number" step="0.01" value="${p.score}" data-field="score" style="width:80px"/></td>
+        <td><button class="danger" data-action="remove">Remove</button></td>
+      `;
+      tr.querySelector('[data-field=name]').addEventListener('input', e => p.name = e.target.value);
+      tr.querySelector('[data-field=tier]').addEventListener('change', e => p.tier = e.target.value);
+      tr.querySelector('[data-field=score]').addEventListener('input', e => { p.score = parseFloat(e.target.value)||0; header.querySelector('h2').textContent = `${club.name} — ${club.players.length} players — total ${clubTotal(club).toFixed(2)} / 65.00`; });
+      tr.querySelector('[data-action=remove]').addEventListener('click', () => { club.players.splice(pi, 1); renderClub(idx); });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    editorCard.appendChild(table);
+
+    const addRow = document.createElement('div');
+    addRow.className = 'row';
+    addRow.style.marginTop = '14px';
+    addRow.innerHTML = `
+      <input type="text" id="newName" placeholder="New player name" />
+      <select id="newTier">
+        <option value="first">first</option><option value="sub" selected>sub</option><option value="youth">youth</option><option value="best">best</option>
+      </select>
+      <input type="number" id="newScore" step="0.01" placeholder="weight" style="width:80px" />
+      <button id="addPlayerBtn">Add player</button>
+      <button class="secondary" id="normalizeBtn">Re-normalize to 65.00</button>
+    `;
+    editorCard.appendChild(addRow);
+    document.getElementById('addPlayerBtn').addEventListener('click', () => {
+      const name = document.getElementById('newName').value.trim();
+      const tier = document.getElementById('newTier').value;
+      const score = parseFloat(document.getElementById('newScore').value) || {best:5,first:3,sub:2,youth:1}[tier];
+      if (!name) return;
+      club.players.push({ name, tier, score });
+      renderClub(idx);
+    });
+    document.getElementById('normalizeBtn').addEventListener('click', () => {
+      const total = clubTotal(club);
+      if (total > 0) club.players.forEach(p => p.score = Math.round((p.score * 65/total)*100)/100);
+      renderClub(idx);
+    });
+  }
+  renderClub(0);
+  sel.addEventListener('change', () => renderClub(parseInt(sel.value)));
+
+  const exportCard = document.createElement('div');
+  exportCard.className = 'card';
+  exportCard.innerHTML = `<h2>3. Export</h2><div class="help">Downloads updated <code>squads.json</code>. In GitHub: open <code>public/squads.json</code> → edit → paste this file's contents in → commit to main. Netlify redeploys automatically.</div>`;
+  const btn = document.createElement('button');
+  btn.textContent = 'Download squads.json';
+  btn.addEventListener('click', () => download('squads.json', squadsData));
+  exportCard.appendChild(btn);
+  const pubRow = document.createElement('div');
+  pubRow.className = 'row';
+  pubRow.style.marginTop = '10px';
+  attachPublish(pubRow, 'public/squads.json', () => squadsData, 'Publish to live site');
+  exportCard.appendChild(pubRow);
+  el.appendChild(exportCard);
+
+  window.__jumpToClub = (name) => {
+    const i = squadsData.clubs.findIndex(c => c.name === name);
+    if (i < 0) return;
+    document.querySelector('.side-link[data-tab=squads]').click();
+    sel.value = i; renderClub(i);
+  };
+}
+
+/* ---------------- SQUAD ALERTS ---------------- */
+document.getElementById('autoLoadAlerts').addEventListener('click', async () => {
+  const d = await autoLoad('public/squad-alerts.json', document.getElementById('alertsStatus'));
+  if (d) { alertsData = d; renderAlerts(); }
+});
+document.getElementById('alertsFile').addEventListener('change', e => {
+  const f = e.target.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = () => { alertsData = JSON.parse(r.result); document.getElementById('alertsStatus').textContent = '✓ Loaded ' + f.name; renderAlerts(); };
+  r.readAsText(f);
+});
+
+function renderAlerts() {
+  const el = document.getElementById('alertsEditor');
+  const badge = document.getElementById('alertCount');
+  el.innerHTML = '';
+  if (!alertsData) return;
+  const clubNames = Object.keys(alertsData.clubs || {});
+  badge.style.display = clubNames.length ? 'inline-block' : 'none';
+  badge.textContent = clubNames.length;
+  if (!clubNames.length) { el.innerHTML = '<div class="empty">No squad changes detected — everything matches the live FPL squad list.</div>'; return; }
+  clubNames.forEach(name => {
+    const c = alertsData.clubs[name];
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML = `
+      <div class="flex-between"><h2 style="margin:0">${name}</h2><button data-jump="${name}">Edit squad →</button></div>
+      ${c.note ? `<div class="alert-block">${c.note}</div>` : ''}
+      ${c.missing && c.missing.length ? `<div class="alert-block"><strong>In your squads.json but not found on the live FPL squad (transferred out / retired?):</strong>${c.missing.join(', ')}</div>` : ''}
+      ${c.added && c.added.length ? `<div class="alert-block"><strong>On the live FPL squad but not in your squads.json (new signing?):</strong>${c.added.map(p => p.name).join(', ')}</div>` : ''}
+    `;
+    card.querySelector('[data-jump]').addEventListener('click', () => window.__jumpToClub(name));
+    el.appendChild(card);
+  });
+}
+
+/* ---------------- INJURIES ---------------- */
+document.getElementById('autoLoadFpl').addEventListener('click', async () => {
+  const d = await autoLoad('public/fpl-data.json', document.getElementById('fplStatus'));
+  if (d) { fplData = d; renderInjuries(); }
+});
+document.getElementById('fplFile').addEventListener('change', e => {
+  const f = e.target.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = () => { fplData = JSON.parse(r.result); document.getElementById('fplStatus').textContent = '✓ Loaded ' + f.name; renderInjuries(); };
+  r.readAsText(f);
+});
+
+function renderInjuries() {
+  const el = document.getElementById('injuriesEditor');
+  if (!fplData) { el.innerHTML = ''; return; }
+  el.innerHTML = '';
+
+  const teamName = id => (fplData.teams.find(t => t.id === id) || {}).name || '?';
+
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML = `<h2>2. Search a player</h2>`;
+  const search = document.createElement('input');
+  search.type = 'search'; search.placeholder = 'Type a surname…'; search.style.width = '240px';
+  card.appendChild(search);
+  el.appendChild(card);
+
+  const resultsCard = document.createElement('div');
+  resultsCard.className = 'card';
+  el.appendChild(resultsCard);
+
+  function renderResults(filter) {
+    resultsCard.innerHTML = '';
+    if (!filter) { resultsCard.innerHTML = '<div class="empty">Start typing a player name above.</div>'; return; }
+    const matches = fplData.players.filter(p => p.web_name.toLowerCase().includes(filter.toLowerCase())).slice(0, 25);
+    if (!matches.length) { resultsCard.innerHTML = '<div class="empty">No matches.</div>'; return; }
+    const table = document.createElement('table');
+    table.innerHTML = `<thead><tr><th>Player</th><th>Club</th><th>Status</th><th>Chance %</th><th>News</th></tr></thead>`;
+    const tbody = document.createElement('tbody');
+    matches.forEach(p => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${p.web_name}</td>
+        <td>${teamName(p.team)}</td>
+        <td>
+          <select data-field="status">
+            ${['a','i','d','s','u'].map(s => `<option value="${s}" ${p.status===s?'selected':''}>${s}</option>`).join('')}
+          </select>
+        </td>
+        <td><input type="number" data-field="chance" value="${p.chance_this ?? ''}" style="width:60px" placeholder="—"/></td>
+        <td><input type="text" data-field="news" value="${p.news || ''}" style="width:220px" placeholder="e.g. Hamstring injury"/></td>
+      `;
+      tr.querySelector('[data-field=status]').addEventListener('change', e => p.status = e.target.value);
+      tr.querySelector('[data-field=chance]').addEventListener('input', e => p.chance_this = e.target.value === '' ? null : parseInt(e.target.value));
+      tr.querySelector('[data-field=news]').addEventListener('input', e => p.news = e.target.value);
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    resultsCard.appendChild(table);
+  }
+  search.addEventListener('input', () => renderResults(search.value));
+  renderResults('');
+
+  const exportCard = document.createElement('div');
+  exportCard.className = 'card';
+  exportCard.innerHTML = `<h2>3. Export</h2><div class="help">Downloads updated <code>fpl-data.json</code> for <code>public/fpl-data.json</code>. Note: the daily automated refresh will overwrite manual status edits with live FPL data next run.</div>`;
+  const btn = document.createElement('button');
+  btn.textContent = 'Download fpl-data.json';
+  btn.addEventListener('click', () => { fplData._synthetic = false; fplData.fetched_at = new Date().toISOString(); download('fpl-data.json', fplData); });
+  exportCard.appendChild(btn);
+  const pubRow = document.createElement('div');
+  pubRow.className = 'row';
+  pubRow.style.marginTop = '10px';
+  attachPublish(pubRow, 'public/fpl-data.json', () => { if (fplData) { fplData._synthetic = false; fplData.fetched_at = new Date().toISOString(); } return fplData; }, 'Publish to live site');
+  exportCard.appendChild(pubRow);
+  el.appendChild(exportCard);
+}
+
+/* ---------------- INSIGHTS ---------------- */
+document.getElementById('autoLoadInsights').addEventListener('click', async () => {
+  const d = await autoLoad('public/insights.json', document.getElementById('insightsStatus'));
+  if (d) { insightsData = d; renderInsights(); }
+});
+document.getElementById('insightsFile').addEventListener('change', e => {
+  const f = e.target.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = () => { insightsData = JSON.parse(r.result); document.getElementById('insightsStatus').textContent = '✓ Loaded ' + f.name; renderInsights(); };
+  r.readAsText(f);
+});
+document.getElementById('newInsights').addEventListener('click', () => {
+  insightsData = { articles: [] };
+  document.getElementById('insightsStatus').textContent = '✓ Started new insights.json';
+  renderInsights();
+});
+
+function uid() { return 'a' + Math.random().toString(36).slice(2,9); }
+
+function renderInsights() {
+  const el = document.getElementById('insightsEditor');
+  if (!insightsData) { el.innerHTML = ''; return; }
+  el.innerHTML = '';
+
+  const card = document.createElement('div');
+  card.className = 'card';
+  const featuredCount = insightsData.articles.filter(a => a.featured).length;
+  card.innerHTML = `<h2>2. Articles (${insightsData.articles.length} total, ${featuredCount} featured on homepage — pick exactly 3)</h2>`;
+  el.appendChild(card);
+
+  insightsData.articles.forEach((a, i) => {
+    const row = document.createElement('div');
+    row.className = 'card';
+    row.innerHTML = `
+      <div class="row">
+        <input type="text" data-f="title" value="${a.title||''}" placeholder="Headline" style="flex:1;min-width:260px"/>
+        <label style="font-size:13px;color:var(--text-dim)"><input type="checkbox" data-f="featured" ${a.featured?'checked':''}/> Featured on homepage</label>
+        <button class="danger" data-action="remove">Remove</button>
+      </div>
+      <div class="row">
+        <input type="text" data-f="author" value="${a.author||''}" placeholder="Author" style="width:160px"/>
+        <input type="text" data-f="date" value="${a.date||''}" placeholder="YYYY-MM-DD" style="width:130px"/>
+        <input type="text" data-f="tag" value="${a.tag||''}" placeholder="Tag e.g. Transfers" style="width:140px"/>
+      </div>
+      <textarea data-f="summary" placeholder="Short summary shown on the article list">${a.summary||''}</textarea>
+      <textarea data-f="body" placeholder="Full article body">${a.body||''}</textarea>
+    `;
+    row.querySelectorAll('[data-f]').forEach(inp => {
+      const field = inp.dataset.f;
+      const ev = inp.type === 'checkbox' ? 'change' : 'input';
+      inp.addEventListener(ev, e => {
+        a[field] = inp.type === 'checkbox' ? e.target.checked : e.target.value;
+        if (field === 'featured') renderInsights();
+      });
+    });
+    row.querySelector('[data-action=remove]').addEventListener('click', () => { insightsData.articles.splice(i,1); renderInsights(); });
+    el.appendChild(row);
+  });
+
+  const addCard = document.createElement('div');
+  addCard.className = 'card';
+  const addBtn = document.createElement('button');
+  addBtn.textContent = '+ Add article';
+  addBtn.addEventListener('click', () => {
+    insightsData.articles.unshift({ id: uid(), title: '', author: '', date: new Date().toISOString().slice(0,10), tag: '', summary: '', body: '', featured: false });
+    renderInsights();
+  });
+  addCard.appendChild(addBtn);
+  el.appendChild(addCard);
+
+  const exportCard = document.createElement('div');
+  exportCard.className = 'card';
+  exportCard.innerHTML = `<h2>3. Export</h2><div class="help">Downloads <code>insights.json</code> for <code>public/insights.json</code>.</div>`;
+  const btn = document.createElement('button');
+  btn.textContent = 'Download insights.json';
+  btn.addEventListener('click', () => {
+    const featured = insightsData.articles.filter(a=>a.featured).length;
+    if (featured !== 3) { if (!confirm(`You have ${featured} featured articles, not 3. The homepage is designed for exactly 3. Export anyway?`)) return; }
+    insightsData.articles.forEach(a => { if (!a.id) a.id = uid(); });
+    download('insights.json', insightsData);
+  });
+  exportCard.appendChild(btn);
+  const pubRow = document.createElement('div');
+  pubRow.className = 'row';
+  pubRow.style.marginTop = '10px';
+  attachPublish(pubRow, 'public/insights.json', () => {
+    insightsData.articles.forEach(a => { if (!a.id) a.id = uid(); });
+    return insightsData;
+  }, 'Publish to live site');
+  exportCard.appendChild(pubRow);
+  el.appendChild(exportCard);
+}
+
+/* ---------------- TRANSFERS ---------------- */
+let transfersLog = null;
+const trPending = [];
+const trStrip = s => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase().replace(/[^a-z ]/g, ' ').replace(/\s+/g, ' ').trim();
+const TR_DEPARTED = /(has joined|joined on loan|on loan (at|to)|left the club|transferred|signed for)/i;
+const trIsDeparted = p => !!p && (p.status === 'u' || TR_DEPARTED.test(p.news || ''));
+
+function trMatch(name, pool) {
+  const pn = trStrip(name);
+  if (!pn) return null;
+  const keys = fp => [fp.web_name, fp.second_name, fp.first_name + ' ' + fp.second_name,
+    fp.first_name + ' ' + fp.web_name].map(trStrip);
+  let hits = pool.filter(fp => keys(fp).includes(pn));
+  if (!hits.length) hits = pool.filter(fp => trStrip(fp.second_name).split(' ').slice(-1)[0] === pn);
+  return hits.length === 1 ? hits[0] : null;
+}
+
+function trEnsure(c) {
+  if (!Array.isArray(c.players) || !c.players.length) {
+    c.players = [{ name: c.best, tier: 'best' }].concat(
+      (c.first || []).map(n => ({ name: n, tier: 'first' })),
+      (c.sub || []).map(n => ({ name: n, tier: 'sub' })),
+      (c.youth || []).map(n => ({ name: n, tier: 'youth' })));
+  }
+}
+
+function trRebuild(c) {
+  if (!c.players.some(p => p.tier === 'best')) {
+    const next = c.players.filter(p => p.tier === 'first').sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+    if (next) next.tier = 'best';
+  }
+  const byTier = t => c.players.filter(p => p.tier === t).sort((a, b) => (b.score || 0) - (a.score || 0)).map(p => p.name);
+  c.best = (c.players.find(p => p.tier === 'best') || {}).name || c.best;
+  c.first = byTier('first'); c.sub = byTier('sub'); c.youth = byTier('youth');
+}
+
+function trTeam(club) {
+  return fplData ? (fplData.teams.find(t => t.name === club.name || t.short_name === club.short) || null) : null;
+}
+
+function trMove(playerName, fromName, toName) {
+  const from = squadsData.clubs.find(c => c.name === fromName);
+  const to = toName ? squadsData.clubs.find(c => c.name === toName) : null;
+  const p = from && from.players.find(x => x.name === playerName);
+  if (!p) return;
+  from.players = from.players.filter(x => x !== p);
+  if (to) { to.players.push({ ...p, tier: p.tier === 'best' ? 'first' : p.tier }); trRebuild(to); }
+  trRebuild(from);
+  trPending.push({ player: playerName, from: fromName, to: toName || null });
+  renderTransfers();
+}
+
+function trAdd(name, clubName, tier, score) {
+  const club = squadsData.clubs.find(c => c.name === clubName);
+  if (!club || !name.trim()) return;
+  if (club.players.some(p => trStrip(p.name) === trStrip(name))) return;
+  const entry = { name: name.trim(), tier };
+  if (score !== '' && score != null && !isNaN(Number(score))) entry.score = Number(score);
+  club.players.push(entry);
+  trRebuild(club);
+  trPending.push({ player: entry.name, from: null, to: clubName, add: true, tier, score: entry.score });
+  renderTransfers();
+}
+
+/* Differences between squads.json and the live FPL squads. */
+function trDetect() {
+  if (!fplData || !squadsData) return [];
+  const clubOf = new Map();
+  squadsData.clubs.forEach(c => { const t = trTeam(c); if (t) clubOf.set(t.id, c); });
+  const found = [];
+  squadsData.clubs.forEach(club => {
+    const t = trTeam(club);
+    const pool = t ? fplData.players.filter(p => p.team === t.id) : [];
+    club.players.forEach(p => {
+      const inClub = trMatch(p.name, pool);
+      if (inClub && !trIsDeparted(inClub)) return;
+      const fp = inClub || trMatch(p.name, fplData.players);
+      if (!fp) { found.push({ kind: 'check', player: p.name, from: club.name, reason: 'Not in the FPL player list - confirm the departure or fix the spelling.' }); return; }
+      if (trIsDeparted(fp)) { found.push({ kind: 'out', player: p.name, from: club.name, reason: (fp.news || 'FPL lists this player as unavailable').trim() }); return; }
+      const dest = clubOf.get(fp.team);
+      if (dest && dest !== club) found.push({ kind: 'move', player: p.name, from: club.name, to: dest.name, reason: 'FPL now lists this player at ' + dest.name });
+    });
+  });
+  return found;
+}
+
+const trClubOptions = (selected, outLabel) => ['<option value="">' + (outLabel || 'Out of the league') + '</option>']
+  .concat(squadsData.clubs.map(c => `<option value="${c.name}"${c.name === selected ? ' selected' : ''}>${c.name}</option>`)).join('');
+const TR_TIERS = ['best', 'first', 'sub', 'youth'];
+const trTierOptions = sel => TR_TIERS.map(t => `<option value="${t}"${t === sel ? ' selected' : ''}>${t}</option>`).join('');
+
+document.getElementById('autoLoadTransfers').addEventListener('click', async () => {
+  const statusEl = document.getElementById('transfersStatus');
+  const [sq, fpl, log] = await Promise.all([
+    autoLoad('public/squads.json', statusEl),
+    autoLoad('public/fpl-data.json', statusEl),
+    autoLoad('public/transfers.json', statusEl),
+  ]);
+  if (sq) squadsData = sq;
+  if (fpl) fplData = fpl;
+  transfersLog = log || null;
+  if (sq) {
+    squadsData.clubs.forEach(trEnsure);
+    trPending.length = 0;
+    statusEl.textContent = '✓ Loaded squads.json' + (fpl ? ' + fpl-data.json' : '') + (log ? ' + transfers.json' : ' (no nightly transfers.json yet)');
+    renderTransfers();
+  }
+});
+
+function renderTransfers() {
+  const el = document.getElementById('transfersEditor');
+  if (!squadsData) { el.innerHTML = ''; return; }
+  squadsData.clubs.forEach(trEnsure);
+
+  const detected = trDetect();
+  const actionable = detected.filter(d => d.kind !== 'check');
+  const feed = (transfersLog && transfersLog.feed) || {};
+  const arrivals = ((transfersLog && transfersLog.arrivals) || [])
+    .filter(a => !squadsData.clubs.some(c => c.players.some(p => trStrip(p.name) === trStrip(a.player))));
+  const unscored = [];
+  squadsData.clubs.forEach(c => c.players.forEach(p => { if (typeof p.score !== 'number' || !p.score) unscored.push({ club: c, p }); }));
+
+  const badge = document.getElementById('transferCount');
+  const outstanding = actionable.length + arrivals.length + unscored.length;
+  badge.textContent = outstanding;
+  badge.style.display = outstanding ? 'inline-block' : 'none';
+
+  el.innerHTML = `
+    <div class="card">
+      <h2>2. Detected from live FPL data</h2>
+      <div class="help" id="trDetectNote"></div>
+      <div id="trDetectList"></div>
+    </div>
+    <div class="card">
+      <h2>3. New signings from the transfer feed</h2>
+      <div class="help" id="trFeedNote"></div>
+      <div id="trFeedList"></div>
+    </div>
+    <div class="card">
+      <h2>4. Players with no weight</h2>
+      <div class="help">A player with no weight scores nothing when injured. Anyone arriving from another league lands here — set a weight (0.10&ndash;5.00) to bring them into the model.</div>
+      <div id="trUnscored"></div>
+    </div>
+    <div class="card">
+      <h2>5. Manual move</h2>
+      <div class="help">Move a player between clubs, or out of the league.</div>
+      <div class="row"><input type="search" id="trSearch" placeholder="Type a player name…" style="width:280px" /></div>
+      <div id="trSearchList"></div>
+    </div>
+    <div class="card">
+      <h2>6. Changes this session</h2>
+      <div id="trPendingList"></div>
+    </div>
+    <div class="card">
+      <h2>7. Export</h2>
+      <div class="help">Downloads updated <code>squads.json</code>. Replace <code>public/squads.json</code> in GitHub and commit.</div>
+      <div class="row"><button id="trExport">Download squads.json</button></div>
+      <div class="row" id="trPublishRow" style="margin-top:10px"></div>
+    </div>`;
+
+  /* detected */
+  document.getElementById('trDetectNote').textContent = fplData
+    ? (detected.length ? `${actionable.length} change${actionable.length === 1 ? '' : 's'} FPL suggests, ${detected.length - actionable.length} to check by hand.`
+      : 'Every squad matches the live FPL data.')
+    : 'fpl-data.json not loaded - detection unavailable.';
+  const dl = document.getElementById('trDetectList');
+  dl.innerHTML = detected.length ? `<table><thead><tr><th>Player</th><th>Change</th><th>Why</th><th></th></tr></thead><tbody>${
+    detected.map((d, i) => `<tr>
+      <td><b>${d.player}</b></td>
+      <td>${d.from}${d.to ? ' → ' + d.to : d.kind === 'out' ? ' → out of the league' : ''}</td>
+      <td style="color:var(--text-dim)">${d.reason}</td>
+      <td>${d.kind === 'check' ? '<span style="color:var(--text-dim)">Check</span>' : `<button data-tr-apply="${i}">Apply</button>`}</td>
+    </tr>`).join('')}</tbody></table>` : '<div class="empty">Nothing to apply.</div>';
+  dl.querySelectorAll('[data-tr-apply]').forEach(b => b.addEventListener('click', () => {
+    const d = detected[Number(b.dataset.trApply)];
+    trMove(d.player, d.from, d.to || null);
+  }));
+  if (actionable.length) {
+    const all = document.createElement('button');
+    all.className = 'secondary'; all.textContent = 'Apply all ' + actionable.length; all.style.marginTop = '12px';
+    all.addEventListener('click', () => actionable.forEach(d => trMove(d.player, d.from, d.to || null)));
+    dl.appendChild(all);
+  }
+
+  /* feed arrivals */
+  document.getElementById('trFeedNote').innerHTML = transfersLog
+    ? (feed.error ? `<span style="color:#e0b23c">Feed problem: ${feed.error}</span><br />` : '')
+      + `${feed.rows || 0} deals read${feed.fetched_at ? ' · ' + new Date(feed.fetched_at).toLocaleString('en-GB') : ''} · ${arrivals.length} signing${arrivals.length === 1 ? '' : 's'} to weight.`
+      + (feed.source ? ` <a href="${feed.source}" target="_blank" rel="noopener">Source</a>` : '')
+    : 'transfers.json not loaded - run the nightly job to populate the feed.';
+  const fl = document.getElementById('trFeedList');
+  fl.innerHTML = arrivals.length ? `<table><thead><tr><th>Player</th><th>Joining</th><th>From</th><th>Tier</th><th>Weight</th><th></th></tr></thead><tbody>${
+    arrivals.map((a, i) => `<tr>
+      <td><b>${a.player}</b></td>
+      <td><select data-tr-aclub="${i}">${trClubOptions(a.club, 'Pick a club')}</select></td>
+      <td style="color:var(--text-dim)">${a.from || 'unknown'}${a.detail ? ' · ' + a.detail : ''}</td>
+      <td><select data-tr-atier="${i}">${trTierOptions('first')}</select></td>
+      <td><input type="number" step="0.01" min="0" max="5" data-tr-ascore="${i}" style="width:80px" placeholder="0.00" /></td>
+      <td><button data-tr-addbtn="${i}">Add</button></td>
+    </tr>`).join('')}</tbody></table>` : '<div class="empty">No signings waiting.</div>';
+  fl.querySelectorAll('[data-tr-addbtn]').forEach(b => b.addEventListener('click', () => {
+    const i = Number(b.dataset.trAddbtn);
+    const club = fl.querySelector(`[data-tr-aclub="${i}"]`).value;
+    if (!club) return;
+    trAdd(arrivals[i].player, club, fl.querySelector(`[data-tr-atier="${i}"]`).value, fl.querySelector(`[data-tr-ascore="${i}"]`).value);
+  }));
+
+  /* unscored */
+  const ul = document.getElementById('trUnscored');
+  ul.innerHTML = unscored.length ? `<table><thead><tr><th>Player</th><th>Club</th><th>Tier</th><th>Now</th><th>Weight</th></tr></thead><tbody>${
+    unscored.map((u, i) => `<tr>
+      <td><b>${u.p.name}</b></td>
+      <td>${u.club.name}</td>
+      <td><select data-tr-utier="${i}">${trTierOptions(u.p.tier)}</select></td>
+      <td><span style="color:#e0b23c">no weight</span></td>
+      <td><input type="number" step="0.01" min="0" max="5" data-tr-uscore="${i}" style="width:80px" placeholder="0.00" /></td>
+    </tr>`).join('')}</tbody></table>
+    <div class="row" style="margin-top:12px"><button id="trSaveUnscored">Save weights</button></div>`
+    : '<div class="empty">Every player carries a weight.</div>';
+  const save = document.getElementById('trSaveUnscored');
+  if (save) save.addEventListener('click', () => {
+    unscored.forEach((u, i) => {
+      const v = ul.querySelector(`[data-tr-uscore="${i}"]`).value;
+      u.p.tier = ul.querySelector(`[data-tr-utier="${i}"]`).value;
+      if (v !== '' && !isNaN(Number(v))) u.p.score = Number(v);
+    });
+    squadsData.clubs.forEach(trRebuild);
+    renderTransfers();
+  });
+
+  /* manual search */
+  const search = document.getElementById('trSearch');
+  const sl = document.getElementById('trSearchList');
+  const renderSearch = () => {
+    const q = trStrip(search.value);
+    if (q.length < 2) { sl.innerHTML = '<div class="help">Type at least two letters.</div>'; return; }
+    const hits = [];
+    squadsData.clubs.forEach(c => c.players.forEach(p => { if (trStrip(p.name).includes(q)) hits.push({ p, c }); }));
+    sl.innerHTML = hits.length ? `<table><thead><tr><th>Player</th><th>Now at</th><th>Move to</th><th></th></tr></thead><tbody>${
+      hits.slice(0, 15).map(({ p, c }, i) => `<tr>
+        <td><b>${p.name}</b> <span style="color:var(--text-dim)">${p.tier}${typeof p.score === 'number' ? ' · ' + p.score : ' · no weight'}</span></td>
+        <td>${c.name}</td>
+        <td><select data-tr-dest="${i}">${trClubOptions(c.name)}</select></td>
+        <td><button data-tr-go="${i}">Apply</button></td>
+      </tr>`).join('')}</tbody></table>` : '<div class="empty">No player by that name.</div>';
+    sl.querySelectorAll('[data-tr-go]').forEach(b => b.addEventListener('click', () => {
+      const i = Number(b.dataset.trGo);
+      const { p, c } = hits[i];
+      const dest = sl.querySelector(`[data-tr-dest="${i}"]`).value;
+      if (dest === c.name) return;
+      trMove(p.name, c.name, dest || null);
+    }));
+  };
+  search.addEventListener('input', renderSearch);
+  renderSearch();
+
+  /* pending */
+  document.getElementById('trPendingList').innerHTML = trPending.length
+    ? `<table><thead><tr><th>Player</th><th>Change</th></tr></thead><tbody>${trPending.map(c => `<tr>
+        <td><b>${c.player}</b></td>
+        <td>${c.add ? 'Added to ' + c.to + ' · ' + c.tier + (c.score ? ' · ' + c.score : ' · no weight') : c.from + ' → ' + (c.to || 'out of the league')}</td>
+      </tr>`).join('')}</tbody></table>`
+    : '<div class="empty">Nothing changed yet. Reload above to discard changes.</div>';
+
+  document.getElementById('trExport').addEventListener('click', () => {
+    squadsData.generated = new Date().toISOString();
+    download('squads.json', squadsData);
+  });
+  attachPublish(document.getElementById('trPublishRow'), 'public/squads.json', () => {
+    squadsData.generated = new Date().toISOString();
+    return squadsData;
+  }, 'Publish to live site');
+}
+</script>
+</body>
+</html>
