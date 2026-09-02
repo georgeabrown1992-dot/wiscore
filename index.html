@@ -194,7 +194,7 @@
   .club-name { font-weight: 600; }
   .wiscore-badge { display: inline-flex; align-items: center; gap: 8px; }
   .wiscore-num { font-family: var(--font-display); font-weight: 700; font-size: 20px; min-width: 28px; text-align: right; font-variant-numeric: tabular-nums; }
-  .zone-pill { padding: 4px 10px; border-radius: 100px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: white; white-space: nowrap; display: inline-flex; align-items: center; justify-content: center; align-self: flex-start; width: 118px; text-align: center; }
+  .zone-pill { padding: 4px 10px; border-radius: 100px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: white; white-space: nowrap; display: inline-flex; align-items: center; justify-content: center; align-self: flex-start; min-width: 118px; flex-shrink: 0; box-sizing: border-box; text-align: center; }
   .fixture-team.away .zone-pill { align-self: flex-end; }
   .fixture-list { display: flex; flex-direction: column; gap: 1px; background: var(--border); border-radius: 8px; overflow: hidden; }
   .fixture-row { background: var(--panel); padding: 14px 16px; cursor: pointer; display: flex; flex-direction: column; gap: 10px; }
@@ -207,7 +207,7 @@
   .fixture-vs { color: var(--text-mute); font-size: 12px; flex-shrink: 0; }
   @media (max-width: 560px) {
     .fixture-team-name { font-size: 13px; }
-    .zone-pill { font-size: 10px; padding: 3px 8px; }
+    .zone-pill { font-size: 10px; padding: 3px 8px; min-width: 104px; }
   }
   .lp-cell { display: flex; align-items: center; gap: 8px; font-variant-numeric: tabular-nums; }
   .delta { font-size: 11px; color: var(--text-mute); }
