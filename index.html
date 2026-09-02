@@ -75,6 +75,15 @@
   .nav-burger span { display: block; width: 22px; height: 2px; background: #f7f7f4; margin: 5px 0; }
   .nav-mobile-panel { display: none; flex-direction: column; gap: 2px; padding: 10px 20px 14px; background: #16161a; border-top: 1px solid rgba(255,255,255,0.08); }
   .nav-mobile-panel .nav-link { width: 100%; }
+  .nav-links-primary { display: none; gap: 4px; margin-left: 12px; }
+  .mw-nav { display: flex; gap: 6px; flex-wrap: wrap; }
+  .mw-btn {
+    background: #1e1e22; color: #cfcfc9; border: 1px solid rgba(255,255,255,0.1);
+    padding: 8px 12px; border-radius: 3px; font-size: 12px; font-weight: 600;
+    letter-spacing: 0.03em; cursor: pointer; font-family: inherit;
+  }
+  .mw-btn:hover:not(:disabled) { color: white; border-color: rgba(255,255,255,0.25); }
+  .mw-btn:disabled { opacity: 0.35; cursor: default; }
   .social-links { display: flex; gap: 10px; align-items: center; }
   .social-links a { color: #9a9a94; display: flex; }
   .social-links a:hover { color: white; }
@@ -84,8 +93,15 @@
   @media (max-width: 760px) {
     .nav-links { display: none; }
     .nav-meta { display: none; }
-    .nav-burger { display: block; }
+    .nav-burger { display: block; margin-left: 4px; }
     .nav-mobile-panel.open { display: flex; }
+    .nav-links-primary { display: flex; margin-left: auto; }
+    .nav-links-primary .nav-link { padding: 8px 10px; font-size: 12px; white-space: nowrap; }
+    .social-links { display: none; }
+  }
+  @media (max-width: 400px) {
+    .nav-links-primary { margin-left: 8px; }
+    .nav-links-primary .nav-link { padding: 7px 8px; font-size: 11px; }
   }
   .email-capture { background: #16161a; border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; padding: 20px 22px; margin-top: 18px; }
   .email-capture h3 { margin: 0 0 4px; font-size: 15px; }
@@ -364,6 +380,19 @@ async function bootstrap() {
     live('public/insights.json'), live('public/fixtures.json'),
   ]);
   const squads = ls || readEmbedded('wi-data-squads');
+  // Guard against duplicate player entries arriving from the feed
+  if (squads && Array.isArray(squads.clubs)) {
+    for (const c of squads.clubs) {
+      if (!Array.isArray(c.players)) continue;
+      const seen = new Set();
+      c.players = c.players.filter(pl => {
+        const k = String(pl && pl.name || '').trim().toLowerCase();
+        if (!k || seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+    }
+  }
   const fpl = lf || readEmbedded('wi-data-fpl');
   const hist = lh || readEmbedded('wi-data-history');
   const insights = li || readEmbedded('wi-data-insights');
@@ -496,6 +525,10 @@ function Nav({ view, setView, fpl }) {
         <${Link} id="insights" label="Insights" />
         <${Link} id="methodology" label="Methodology" />
       </div>
+      <div class="nav-links-primary">
+        <${Link} id="table" label="Table" />
+        <${Link} id="fixtures" label="Fixtures" />
+      </div>
       <button class="nav-burger" onClick=${() => setMenuOpen(v => !v)} aria-label="Menu">
         <span></span><span></span><span></span>
       </button>
@@ -519,8 +552,6 @@ function Nav({ view, setView, fpl }) {
       </div>
     </div>
     <div class=${"nav-mobile-panel " + (menuOpen ? "open" : "")}>
-      <${Link} id="table" label="League Table" />
-      <${Link} id="fixtures" label="Fixtures" />
       <${Link} id="clubs" label="Clubs" />
       <${Link} id="insights" label="Insights" />
       <${Link} id="methodology" label="Methodology" />
@@ -602,9 +633,31 @@ function ArticleView({ articleId, setView }) {
   `;
 }
 
-function FixturesList({ setView, gw }) {
+function upcomingGw() {
+  const { fixtures, fpl } = window.__WI;
+  const mws = fixtures?.matchweeks || [];
+  if (!mws.length) return 1;
+  const now = Date.now();
+  // First matchweek that still has a kickoff ahead of us
+  for (const mw of mws) {
+    const last = (mw.fixtures || []).reduce((acc, f) => {
+      const ts = Date.parse((f.date || '') + 'T' + (f.time || '00:00') + ':00Z');
+      return isNaN(ts) ? acc : Math.max(acc, ts);
+    }, 0);
+    if (last && last > now) return mw.gw;
+  }
+  // Fall back to whatever FPL says is next
+  const fromFpl = fpl?.next_event || ((fpl?.current_event || 0) + 1);
+  return mws.some(m => m.gw === fromFpl) ? fromFpl : mws[mws.length - 1].gw;
+}
+
+function FixturesList({ setView }) {
   const { fixtures, squads, fpl, hist } = window.__WI;
-  const mw = fixtures?.matchweeks?.find(m => m.gw === gw);
+  const mws = fixtures?.matchweeks || [];
+  const [gw, setGw] = useState(() => upcomingGw());
+  const mw = mws.find(m => m.gw === gw);
+  const first = mws.length ? mws[0].gw : 1;
+  const last = mws.length ? mws[mws.length - 1].gw : 1;
   const clubByName = Object.fromEntries(squads.clubs.map(c => [c.name, c]));
 
   function quickWiscore(clubName) {
@@ -619,6 +672,11 @@ function FixturesList({ setView, gw }) {
         <div>
           <h2 class="page-title">Fixtures - Matchweek ${gw}</h2>
           <div class="page-sub">Click a fixture for a full injury head-to-head</div>
+        </div>
+        <div class="mw-nav">
+          <button class="mw-btn" disabled=${gw <= first} onClick=${() => setGw(g => Math.max(first, g - 1))}>← MW${Math.max(first, gw - 1)}</button>
+          <button class="mw-btn" onClick=${() => setGw(upcomingGw())}>Upcoming</button>
+          <button class="mw-btn" disabled=${gw >= last} onClick=${() => setGw(g => Math.min(last, g + 1))}>MW${Math.min(last, gw + 1)} →</button>
         </div>
       </div>
       ${!mw ? html`<div class="empty-state">No fixture data for this matchweek.</div>` : html`
@@ -813,7 +871,6 @@ function LeagueTable({ setView, gw, historyData }) {
               <th onClick=${() => toggleSort('wiscore')}>Zone ${ind('wiscore')}</th>
               <th onClick=${() => toggleSort('lp')}>League Pos ${ind('lp')}</th>
               <!-- lp shows - when null (pre-season) -->
-              <th>Δ WI (vs GW${Math.max(1, gw-1)})</th>
             </tr>
           </thead>
           <tbody>
@@ -834,9 +891,6 @@ function LeagueTable({ setView, gw, historyData }) {
                     <strong>${r.lp ?? '-'}</strong>
                     ${r.lpDelta !== 0 ? html`<span class="delta ${r.lpDelta > 0 ? 'up' : 'down'}">${r.lpDelta > 0 ? '▲' : '▼'} ${Math.abs(r.lpDelta)}</span>` : html`<span class="delta">-</span>`}
                   </div>
-                </td>
-                <td>
-                  <div class="delta ${r.wDelta > 0 ? 'down' : r.wDelta < 0 ? 'up' : ''}">${r.wDelta > 0 ? '+' : ''}${r.wDelta}</div>
                 </td>
               </tr>
             `)}
@@ -1302,7 +1356,7 @@ function App() {
           <div class="alert">
             <strong>Live squad view.</strong> No gameweek has been completed and verified yet, so the table below reflects current squads and live injury news only. Gameweek history and trend charts fill in one point per finished gameweek.
           </div>
-        ` : (view.name === 'table' || view.name === 'clubs' || view.name === 'fixtures') ? html`
+        ` : (view.name === 'table' || view.name === 'clubs') ? html`
           <div class="gw-bar">
             <span class="gw-label">Gameweek</span>
             <span class="gw-value">GW ${gw}</span>
@@ -1328,7 +1382,7 @@ function App() {
 
         ${view.name === 'table' ? html`<${LeagueTable} setView=${setView} gw=${gw} />` : ''}
         ${view.name === 'table' ? html`<${InsightsStrip} setView=${setView} />` : ''}
-        ${view.name === 'fixtures' ? html`<${FixturesList} setView=${setView} gw=${gw} />` : ''}
+        ${view.name === 'fixtures' ? html`<${FixturesList} setView=${setView} />` : ''}
         ${view.name === 'fixture' ? html`<${FixtureDetail} fixtureId=${view.id} setView=${setView} />` : ''}
         ${view.name === 'clubs' ? html`<${ClubsIndex} setView=${setView} />` : ''}
         ${view.name === 'club' ? html`<${ClubDetail} clubName=${view.club} setView=${setView} gw=${gw} />` : ''}
