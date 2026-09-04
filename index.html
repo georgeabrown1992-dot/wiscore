@@ -180,6 +180,7 @@
   .table-scroll { position: relative; overflow-x: auto; border-radius: 6px; }
   .table-scroll::after { content: ''; position: absolute; top: 0; right: 0; bottom: 0; width: 28px; pointer-events: none; background: linear-gradient(to right, transparent, var(--bg-card)); }
   table { width: 100%; border-collapse: collapse; min-width: 560px; }
+  .scroll-hint { display: none; }
   thead { background: var(--bg-elevated); }
   th { text-align: left; padding: 14px 16px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); font-weight: 600; border-bottom: 1px solid var(--border); cursor: pointer; user-select: none; }
   th:hover { color: white; }
@@ -208,6 +209,23 @@
   @media (max-width: 560px) {
     .fixture-team-name { font-size: 13px; }
     .zone-pill { font-size: 10px; padding: 3px 8px; min-width: 104px; }
+  }
+  /* Mobile league table: tighten so Club + Zone both sit on screen, and hint the scroll. */
+  @media (max-width: 620px) {
+    table { min-width: 448px; }
+    th { padding: 11px 10px; font-size: 10px; letter-spacing: 0.05em; }
+    td { padding: 10px; font-size: 13px; }
+    .rank { width: 22px; }
+    th:first-child, td.rank { padding-left: 12px; padding-right: 4px; }
+    table .zone-pill { min-width: 0; font-size: 9.5px; padding: 4px 8px; letter-spacing: 0.02em; }
+    .lp-cell { justify-content: flex-end; }
+    .scroll-hint {
+      display: flex; align-items: center; justify-content: flex-end; gap: 6px;
+      padding: 9px 12px; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.07em;
+      color: var(--text-mute); border-top: 1px solid var(--border); background: var(--bg-elevated);
+      border-radius: 0 0 6px 6px;
+    }
+    .scroll-hint span { color: var(--accent); font-size: 12px; }
   }
   .lp-cell { display: flex; align-items: center; gap: 8px; font-variant-numeric: tabular-nums; }
   .delta { font-size: 11px; color: var(--text-mute); }
@@ -869,7 +887,7 @@ function LeagueTable({ setView, gw, historyData }) {
               <th>#</th>
               <th onClick=${() => toggleSort('club')}>Club ${ind('club')}</th>
               <th onClick=${() => toggleSort('wiscore')}>Zone ${ind('wiscore')}</th>
-              <th onClick=${() => toggleSort('lp')}>League Pos ${ind('lp')}</th>
+              <th class="lp-head" onClick=${() => toggleSort('lp')}>League Pos ${ind('lp')}</th>
               <!-- lp shows - when null (pre-season) -->
             </tr>
           </thead>
@@ -897,6 +915,7 @@ function LeagueTable({ setView, gw, historyData }) {
           </tbody>
         </table>
         </div>
+        <div class="scroll-hint">Swipe for league position <span>→</span></div>
       </div>
 
       <div class="grid-2">
@@ -1144,6 +1163,7 @@ function ClubDetail({ clubName, setView, gw }) {
 
 function ClubTrendChart({ club, wiscore, lp, club2, wiscore2, lp2 }) {
   const ref = useRef(null);
+  const zones = (window.__WI?.squads?.zones || []).slice().sort((a, b) => a.min - b.min);
   useEffect(() => {
     // Verified data only: chart exactly as many gameweeks as have real recorded values.
     const played = Math.max(
@@ -1156,7 +1176,7 @@ function ClubTrendChart({ club, wiscore, lp, club2, wiscore2, lp2 }) {
       : Array.from({ length: played }, (_, i) => `GW${i + 1}`);
     const datasets = [
       {
-        label: `${club} | WIscore`,
+        label: `${club} | Injury zone`,
         data: wiscore,
         borderColor: '#ff3d2e',
         backgroundColor: 'rgba(255,61,46,0.12)',
@@ -1177,7 +1197,7 @@ function ClubTrendChart({ club, wiscore, lp, club2, wiscore2, lp2 }) {
     if (club2) {
       datasets.push(
         {
-          label: `${club2} | WIscore`,
+          label: `${club2} | Injury zone`,
           data: wiscore2,
           borderColor: '#3d7dff',
           yAxisID: 'y',
@@ -1195,36 +1215,91 @@ function ClubTrendChart({ club, wiscore, lp, club2, wiscore2, lp2 }) {
         }
       );
     }
+    // WIscore is read as a severity band, not a raw number: the axis is the zone scale
+    // and the plot area is banded in zone colours so height alone reads as severity.
+    const zTop = (zones.length ? zones[zones.length - 1].min : 23) + 5;
+    const zoneAt = v => { let hit = zones[0]; for (const z of zones) if (v >= z.min) hit = z; return hit; };
+    const bandPlugin = {
+      id: 'zoneBands',
+      beforeDatasetsDraw(c) {
+        const y = c.scales.y, { left, right } = c.chartArea;
+        if (!y) return;
+        const ctx = c.ctx;
+        ctx.save();
+        zones.forEach((z, i) => {
+          const top = y.getPixelForValue(i === zones.length - 1 ? zTop : zones[i + 1].min);
+          const bot = y.getPixelForValue(z.min);
+          ctx.fillStyle = z.color;
+          ctx.globalAlpha = 0.16;
+          ctx.fillRect(left, top, right - left, bot - top);
+          ctx.globalAlpha = 1;
+        });
+        ctx.restore();
+      },
+    };
     const chart = new Chart(ref.current, {
       type: 'line',
       data: { labels, datasets },
+      plugins: [bandPlugin],
       options: {
         interaction: { mode: 'index', intersect: false },
-        plugins: { legend: { labels: { color: '#f6f5f2' } } },
+        plugins: {
+          legend: { labels: { color: '#f6f5f2' } },
+          tooltip: {
+            callbacks: {
+              label(ctx) {
+                const v = ctx.parsed.y;
+                if (ctx.dataset.yAxisID === 'y') {
+                  const z = zoneAt(v);
+                  return `${ctx.dataset.label.replace('WIscore', 'injury zone')}: ${z.label}`;
+                }
+                return `${ctx.dataset.label}: ${v}`;
+              },
+            },
+          },
+        },
         scales: {
           x: { ticks: { color: '#8a8985', maxTicksLimit: Math.max(2, Math.min(12, labels.length)) }, grid: { color: '#2a2a2e' } },
-          y: { position: 'left', ticks: { color: '#ff3d2e' }, grid: { color: '#2a2a2e' }, title: { display: true, text: 'WIscore', color: '#ff3d2e' } },
+          y: {
+            position: 'left', min: 0, max: zTop,
+            grid: { color: '#2a2a2e' },
+            afterBuildTicks: axis => { axis.ticks = zones.map(z => ({ value: z.min })); },
+            ticks: {
+              autoSkip: false,
+              color: c => zoneAt(c.tick.value).color,
+              font: { size: 10, weight: '600' },
+              callback: v => zoneAt(v).label.toUpperCase(),
+            },
+            title: { display: true, text: 'Injury severity', color: '#ff3d2e' },
+          },
           y1: { position: 'right', reverse: true, min: 1, max: 20, ticks: { color: '#21e6a1' }, grid: { display: false }, title: { display: true, text: 'League position', color: '#21e6a1' } },
         },
       },
     });
     return () => chart.destroy();
-  }, [club, wiscore, lp, club2, wiscore2, lp2]);
+  }, [club, wiscore, lp, club2, wiscore2, lp2, zones]);
   return html`<canvas ref=${ref}></canvas>`;
 }
 
 function SquadGrid({ club, squads }) {
   const tw = squads.tierWeights;
   // Build tier-grouped list with per-player scores (from enriched club.players when available)
+  // Tier name lists are the source of truth for who is in the squad; scores are merged in
+  // from the enriched players array where present. Names are de-duplicated so a player who
+  // appears in two lists is only ever shown once, in his highest tier.
+  const scoreOf = {};
+  (Array.isArray(club.players) ? club.players : []).forEach(p => { scoreOf[p.name] = p.score; });
   const playersByTier = { best: [], first: [], sub: [], youth: [] };
-  if (Array.isArray(club.players) && club.players.length) {
-    club.players.forEach(p => (playersByTier[p.tier] || playersByTier.youth).push(p));
-  } else {
-    playersByTier.best.push({ name: club.best, tier: 'best', score: tw.best });
-    (club.first || []).forEach(n => playersByTier.first.push({ name: n, tier: 'first', score: tw.first }));
-    (club.sub || []).forEach(n => playersByTier.sub.push({ name: n, tier: 'sub', score: tw.sub }));
-    (club.youth || []).forEach(n => playersByTier.youth.push({ name: n, tier: 'youth', score: tw.youth }));
-  }
+  const seen = new Set();
+  const push = (tier, name) => {
+    if (!name || seen.has(name)) return;
+    seen.add(name);
+    playersByTier[tier].push({ name, tier, score: scoreOf[name] ?? tw[tier] });
+  };
+  push('best', club.best);
+  (club.first || []).forEach(n => push('first', n));
+  (club.sub || []).forEach(n => push('sub', n));
+  (club.youth || []).forEach(n => push('youth', n));
   const groups = [
     { label: 'First Choice', tier: 'first', cls: 'tier-first', members: playersByTier.first.concat(playersByTier.best) },
     { label: 'First Sub', tier: 'sub', cls: 'tier-sub', members: playersByTier.sub },
@@ -1238,7 +1313,7 @@ function SquadGrid({ club, squads }) {
         <div key=${g.label}>
           <div style=${{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#8a8985', fontWeight: 600, marginBottom: 10 }}>
             <span class=${"player-tier " + g.cls} style=${{ display: 'inline-grid', minWidth: 22, width: 22, height: 22, padding: 0, fontSize: 11, color: '#fff', verticalAlign: 'middle', marginRight: 8, borderRadius: 11 }}>${abbr}</span>
-            ${g.label}
+            ${g.label} <span style=${{ color: '#5f5f5b' }}>(${g.members.length})</span>
           </div>
           ${g.members
               .slice()
