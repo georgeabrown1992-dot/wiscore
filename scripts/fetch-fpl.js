@@ -8,9 +8,9 @@
  *     players whose FPL club changed are MOVED, players who have left the
  *     league (status 'u' / "has joined ..." news) are REMOVED. Every change is
  *     written to public/transfers.json.
- *  3. Appends VERIFIED gameweek history only: one entry per finished gameweek,
- *     recording each club's WIscore and real league position at that point.
- *     Nothing is ever back-filled or synthesised.
+ *  3. Rebuilds gameweek history: league position after EVERY finished
+ *     gameweek is recomputed nightly from actual results and checked against
+ *     the live table. WIscore is recorded once per gameweek and never invented.
  *  4. Refreshes the embedded JSON blocks in index.html so the app also works
  *     from file://.
  *
@@ -78,6 +78,76 @@ function computeStandings(fixtures, teams) {
   list.sort((a, b) => b.points - a.points || b.gd - a.gd || b.gf - a.gf || a.name.localeCompare(b.name));
   list.forEach((r, i) => { r.position = list.some(x => x.played > 0) ? i + 1 : null; });
   return list;
+}
+
+/* ---- live league table from an external source --------------------------
+ * The FPL fixtures feed can lag or disagree with the official table, so the
+ * real standings are pulled from a live source first:
+ *   1. football-data.org (if a FOOTBALL_DATA_KEY secret is set)
+ *   2. ESPN's public standings feed (no key needed)
+ *   3. falls back to the table computed from FPL fixtures above.
+ * Every source is mapped onto FPL team ids by a canonical club key. */
+function clubKey(name) {
+  const n = strip(name).toLowerCase().replace(/[^a-z' ]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (/tottenham|^spurs/.test(n)) return 'TOT';
+  if (/man(chester)? city/.test(n)) return 'MCI';
+  if (/man(chester)? (utd|united)/.test(n)) return 'MUN';
+  if (/forest|nott/.test(n)) return 'NFO';
+  if (/villa/.test(n)) return 'AVL';
+  if (/palace/.test(n)) return 'CRY';
+  if (/west ham/.test(n)) return 'WHU';
+  if (/wolves|wolverhampton/.test(n)) return 'WOL';
+  const w = n.replace(/^afc /, '').split(' ')[0];
+  return w.toUpperCase();
+}
+
+async function fetchJson(url, headers) {
+  try {
+    const r = await fetch(url, { headers: { 'User-Agent': 'wiscore-app/1.0', ...(headers || {}) } });
+    return r.ok ? await r.json() : null;
+  } catch (e) { return null; }
+}
+
+async function fetchLiveTable() {
+  const key = process.env.FOOTBALL_DATA_KEY;
+  if (key) {
+    const j = await fetchJson('https://api.football-data.org/v4/competitions/PL/standings', { 'X-Auth-Token': key });
+    const table = j && (j.standings || []).find(s => s.type === 'TOTAL');
+    if (table && table.table && table.table.length >= 20) return {
+      source: 'football-data.org',
+      rows: table.table.map(r => ({ name: r.team.shortName || r.team.name, alt: [r.team.name, r.team.tla], position: r.position,
+        played: r.playedGames, won: r.won, drawn: r.draw, lost: r.lost, gf: r.goalsFor, ga: r.goalsAgainst, gd: r.goalDifference, points: r.points })),
+    };
+  }
+  const e = await fetchJson('https://site.api.espn.com/apis/v2/sports/soccer/eng.1/standings');
+  const entries = e && ((e.children && e.children[0] && e.children[0].standings && e.children[0].standings.entries) || (e.standings && e.standings.entries));
+  if (entries && entries.length >= 20) {
+    const stat = (en, ...names) => { for (const n of names) { const s = (en.stats || []).find(x => x.name === n || x.type === n); if (s && s.value != null) return +s.value; } return null; };
+    const rows = entries.map(en => ({
+      name: en.team.displayName, alt: [en.team.shortDisplayName, en.team.name, en.team.abbreviation],
+      position: stat(en, 'rank'), played: stat(en, 'gamesPlayed'), won: stat(en, 'wins'), drawn: stat(en, 'ties'), lost: stat(en, 'losses'),
+      gf: stat(en, 'pointsFor'), ga: stat(en, 'pointsAgainst'), gd: stat(en, 'pointDifferential'), points: stat(en, 'points'),
+    }));
+    if (rows.some(r => r.position == null)) {
+      rows.sort((a, b) => b.points - a.points || b.gd - a.gd || b.gf - a.gf);
+      rows.forEach((r, i) => { r.position = i + 1; });
+    }
+    return { source: 'espn', rows };
+  }
+  return null;
+}
+
+/* Map a live table onto FPL team ids. Returns null unless every club matches. */
+function mapLiveTable(live, teams) {
+  if (!live) return null;
+  const byKey = new Map(teams.map(t => [clubKey(t.name), t]));
+  const out = [];
+  for (const r of live.rows) {
+    const t = [r.name, ...(r.alt || [])].filter(Boolean).map(clubKey).map(k => byKey.get(k)).find(Boolean);
+    if (!t) { console.warn(`live table (${live.source}) - no FPL match for "${r.name}"`); return null; }
+    out.push({ id: t.id, name: t.name, played: r.played, won: r.won, drawn: r.drawn, lost: r.lost, gf: r.gf, ga: r.ga, gd: r.gd, points: r.points, position: r.position });
+  }
+  return out.length === teams.length ? out.sort((a, b) => a.position - b.position) : null;
 }
 
 function clubWIscore(club, players, teams, tierWeights) {
@@ -233,31 +303,106 @@ function reconcileSquads(squads, players, teams) {
   return log;
 }
 
-/* ---- verified gameweek history ------------------------------------------- */
-function appendVerifiedHistory(hist, squads, data, players, teams, standings) {
-  // Require BOTH flags: 'finished' alone can be set before FPL has finalised bonus/standings.
-  const finished = (data.events || []).filter(e => e.finished && e.data_checked).map(e => e.id).sort((a, b) => a - b);
+/* ---- match results (for the position history) -----------------------------
+ * Normalised result rows: { home, away, hs, as, kickoff } with FPL team ids. */
+function fplResults(fixtures) {
+  return (fixtures || []).filter(f => f.finished && f.team_h_score !== null && f.kickoff_time)
+    .map(f => ({ home: f.team_h, away: f.team_a, hs: f.team_h_score, as: f.team_a_score, kickoff: f.kickoff_time }));
+}
+
+/* ESPN scoreboard - an independent results source used when FPL's scores
+ * don't reproduce the live table. */
+async function espnResults(teams, fromIso) {
+  const ymd = d => d.toISOString().slice(0, 10).replace(/-/g, '');
+  const from = new Date(fromIso || Date.now() - 300 * 864e5);
+  from.setUTCDate(from.getUTCDate() - 3);
+  const j = await fetchJson(`https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard?dates=${ymd(from)}-${ymd(new Date())}&limit=1000`);
+  if (!j || !Array.isArray(j.events)) return null;
+  const byKey = new Map(teams.map(t => [clubKey(t.name), t.id]));
+  const idOf = tm => [tm.displayName, tm.shortDisplayName, tm.name, tm.abbreviation].filter(Boolean).map(clubKey).map(k => byKey.get(k)).find(Boolean);
+  const rows = [];
+  for (const ev of j.events) {
+    const c = ev.competitions && ev.competitions[0];
+    if (!c || !(c.status || ev.status || {}).type || !((c.status || ev.status).type.completed)) continue;
+    const h = c.competitors.find(x => x.homeAway === 'home'), a = c.competitors.find(x => x.homeAway === 'away');
+    const hid = h && idOf(h.team), aid = a && idOf(a.team);
+    if (!hid || !aid) { console.warn(`espn results - unmatched club in ${ev.name}`); return null; }
+    rows.push({ home: hid, away: aid, hs: +h.score, as: +a.score, kickoff: ev.date });
+  }
+  return rows;
+}
+
+/* League table from results kicked off before `cutoff` (ISO; null = all). */
+function tableFrom(results, teams, cutoff) {
+  const fx = results.filter(r => !cutoff || new Date(r.kickoff) < new Date(cutoff))
+    .map(r => ({ finished: true, team_h: r.home, team_a: r.away, team_h_score: r.hs, team_a_score: r.as }));
+  return computeStandings(fx, teams);
+}
+
+/* True when a results-derived table agrees with the live table on every club. */
+function agrees(table, live) {
+  if (!live) return null;
+  const m = new Map(table.map(r => [r.id, r]));
+  return live.every(l => { const r = m.get(l.id); return r && r.played === l.played && r.points === l.points && r.gd === l.gd; });
+}
+
+/* ---- gameweek history ------------------------------------------------------
+ * League positions are FACTS, so they are rebuilt every night for EVERY
+ * finished gameweek from the actual results: the table after GW n counts every
+ * match kicked off before the GW n+1 deadline (postponed games land in the
+ * week they were actually played, exactly like the real table). Before the
+ * history is written, the same results must reproduce today's live table -
+ * so the past positions are only trusted when the present one checks out.
+ *
+ * WIscore can't be reconstructed after the fact (FPL doesn't publish past
+ * injury lists), so recorded values are kept and only the newest finished
+ * gameweek gets a fresh one. Gameweeks the job missed get positions but a
+ * blank WIscore rather than an invented one. */
+async function rebuildHistory(hist, squads, data, players, teams, fixtures, live) {
+  const events = (data.events || []).slice().sort((a, b) => a.id - b.id);
+  const finished = events.filter(e => e.finished && e.data_checked).map(e => e.id);
   const latest = finished[finished.length - 1];
-  if (!latest) return { hist, added: null };
-  // And wait until results exist, or positions would record as null.
-  if (!standings.some(s => s.played > 0)) return { hist, added: null };
-  const posOf = new Map(standings.map(s => [s.id, s.position]));
-
   const h = hist && Array.isArray(hist.gameweeks) ? hist : { season: '26/27', verified: true, gameweeks: [], clubs: {} };
-  if (h.gameweeks.includes(latest)) return { hist: h, added: null };
+  if (!latest) return { hist: h, added: null, source: null };
 
-  h.gameweeks.push(latest);
-  h.gameweeks.sort((a, b) => a - b);
-  const idx = h.gameweeks.indexOf(latest);
+  let results = fplResults(fixtures), source = 'fpl-results';
+  let check = agrees(tableFrom(results, teams, null), live);
+  if (check === false) {
+    const alt = await espnResults(teams, events[0] && events[0].deadline_time);
+    if (alt && agrees(tableFrom(alt, teams, null), live)) { results = alt; source = 'espn-results'; check = true; }
+    else console.warn('position history - neither FPL nor ESPN results reproduce the live table; recording best available and flagging it.');
+  }
+
+  const cutoffOf = id => { const nx = events.find(e => e.id === id + 1); return nx ? nx.deadline_time : null; };
+  const posByGw = new Map(finished.map(id => {
+    const t = tableFrom(results, teams, cutoffOf(id));
+    return [id, new Map(t.map(r => [r.id, r.position]))];
+  }));
+  // The latest gameweek uses the live table itself when there is one.
+  if (live && check !== false && !cutoffOf(latest)) posByGw.set(latest, new Map(live.map(r => [r.id, r.position])));
+
+  const oldGws = h.gameweeks.slice();
+  const added = finished.filter(g => !oldGws.includes(g));
+  const clubs = {};
   squads.clubs.forEach(club => {
     const t = teams.find(t => t.name === club.name || t.short_name === club.short);
-    const rec = h.clubs[club.name] || (h.clubs[club.name] = { wiscore: [], league_position: [] });
-    rec.wiscore.splice(idx, 0, clubWIscore(club, players, teams, squads.tierWeights));
-    rec.league_position.splice(idx, 0, (t && posOf.get(t.id)) || null);
+    const old = h.clubs[club.name] || { wiscore: [], league_position: [] };
+    const wi = finished.map(g => {
+      const i = oldGws.indexOf(g);
+      if (i >= 0 && old.wiscore[i] != null) return old.wiscore[i];
+      return g === latest ? clubWIscore(club, players, teams, squads.tierWeights) : null;
+    });
+    const lp = finished.map(g => (t && posByGw.get(g).get(t.id)) || null);
+    clubs[club.name] = { ...old, wiscore: wi, league_position: lp };
   });
+
+  h.gameweeks = finished;
+  h.clubs = clubs;
   h.verified_through = latest;
+  h.positions_source = source;
+  h.positions_verified = check !== false;
   h.updated = new Date().toISOString();
-  return { hist: h, added: latest };
+  return { hist: h, added: added.length ? added : null, source };
 }
 
 async function main() {
@@ -268,7 +413,11 @@ async function main() {
   const fixtures = fxRes.ok ? await fxRes.json() : [];
 
   const rawTeams = (data.teams || []).map(t => ({ id: t.id, code: t.code, name: t.name, short_name: t.short_name }));
-  const standings = computeStandings(fixtures, rawTeams);
+  const computed = computeStandings(fixtures, rawTeams);
+  const live = mapLiveTable(await fetchLiveTable(), rawTeams);
+  const standings = live || computed;
+  const standingsSource = live ? (process.env.FOOTBALL_DATA_KEY ? 'football-data.org' : 'espn') : 'fpl-fixtures';
+  console.log(`league table - ${standingsSource}` + (live ? '' : ' (live sources unavailable, using FPL fixtures)'));
   const stand = new Map(standings.map(s => [s.id, s]));
   const teams = rawTeams.map(t => {
     const s = stand.get(t.id) || {};
@@ -289,6 +438,8 @@ async function main() {
     finished_gameweeks: finishedGws,
     verified_through: finishedGws.length ? Math.max(...finishedGws) : 0,
     _synthetic: false,
+    standings_source: standingsSource,
+    standings_updated: new Date().toISOString(),
     teams, players, standings,
   };
 
@@ -314,10 +465,12 @@ async function main() {
     writeJson('transfers.json', log);
     console.log(`transfers.json - ${log.moves.length} moved, ${log.out.length} removed, ${log.arrivals.length} arrivals to weight, ${log.review.length} to review.`);
 
-    const r = appendVerifiedHistory(hist, squads, data, players, teams, standings);
+    const r = await rebuildHistory(hist, squads, data, players, rawTeams, fixtures, live);
     hist = r.hist;
     writeJson('gameweek-history.json', hist);
-    console.log(r.added ? `gameweek-history.json - recorded GW${r.added}.` : 'gameweek-history.json - no new finished gameweek.');
+    console.log(`gameweek-history.json - positions rebuilt for GW${hist.gameweeks[0] ?? '-'}-${hist.verified_through ?? '-'} from ${r.source}` +
+      (hist.positions_verified ? ' (matches live table)' : ' (NOT verified against live table)') +
+      (r.added ? `, added GW${r.added.join(', GW')}.` : '.'));
   }
 
   // Refresh the embedded blocks so the app works from file:// too.
