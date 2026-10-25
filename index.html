@@ -749,8 +749,9 @@ function FixtureDetail({ fixtureId, setView }) {
   const awayZone = zoneFor(awayWI.wiscore, squads.zones);
   const homeHist = hist?.clubs?.[fixture.home];
   const awayHist = hist?.clubs?.[fixture.away];
-  const homeLP = homeHist?.league_position?.[gw - 1] ?? liveLp(homeClub, fpl) ?? '-';
-  const awayLP = awayHist?.league_position?.[gw - 1] ?? liveLp(awayClub, fpl) ?? '-';
+  const gwPos = (hist?.gameweeks || []).indexOf(gw);
+  const homeLP = (gwPos >= 0 ? homeHist?.league_position?.[gwPos] : null) ?? liveLp(homeClub, fpl) ?? '-';
+  const awayLP = (gwPos >= 0 ? awayHist?.league_position?.[gwPos] : null) ?? liveLp(awayClub, fpl) ?? '-';
 
   function InjuredList({ club, wi }) {
     const list = wi.injured.slice().sort((a, b) => b.weight - a.weight);
