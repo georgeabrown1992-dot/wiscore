@@ -473,7 +473,8 @@ function computeClubWIscore(club, fpl, squads) {
     `${fp.first_name} ${fp.web_name}`, `${fp.web_name} ${fp.second_name}`].map(stripName);
   const ranked = enriched.map(p => {
     const pn = stripName(p.name);
-    let hits = pn ? teamPlayers.filter(fp => keysOf(fp).includes(pn)) : [];
+    const byId = p.fpl_id != null ? teamPlayers.find(fp => fp.id === p.fpl_id) : null;
+    let hits = byId ? [byId] : pn ? teamPlayers.filter(fp => keysOf(fp).includes(pn)) : [];
     if (!hits.length && pn) {
       hits = teamPlayers.filter(fp => stripName(fp.second_name).split(' ').slice(-1)[0] === pn);
     }
