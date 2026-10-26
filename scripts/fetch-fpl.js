@@ -25,7 +25,8 @@ const PUB = path.join(ROOT, 'public');
 const FPL_URL = 'https://fantasy.premierleague.com/api/bootstrap-static/';
 const FIXTURES_URL = 'https://fantasy.premierleague.com/api/fixtures/';
 
-const strip = s => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+const strip = s => (s || '').replace(/[øØ]/g, 'o').replace(/ß/g, 'ss').replace(/[æÆ]/g, 'ae').replace(/[đĐ]/g, 'd').replace(/[łŁ]/g, 'l')
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
   .toLowerCase().replace(/[^a-z ]/g, ' ').replace(/\s+/g, ' ').trim();
 const DEPARTED_NEWS = /(has joined|joined on loan|on loan (at|to)|left the club|transferred|signed for)/i;
 const isDeparted = p => !!p && (p.status === 'u' || DEPARTED_NEWS.test(p.news || ''));
@@ -53,11 +54,78 @@ function findPlayers(name, pool) {
     const last = w => strip(w.second_name).split(' ').slice(-1)[0];
     hits = pool.filter(fp => last(fp) === pn); // surname-only squad entry
   }
+  if (!hits.length && pn.includes(' ')) {
+    // Full name from the editorial list: first name + any surname word must match.
+    const w = pn.split(' '), first = w[0], lastW = w[w.length - 1];
+    hits = pool.filter(fp => strip(fp.first_name).split(' ')[0] === first && strip(fp.second_name).split(' ').includes(lastW));
+  }
   return hits;
 }
 function matchPlayer(name, pool) {
   const hits = findPlayers(name, pool);
   return hits.length === 1 ? hits[0] : null; // ambiguous -> no match, flagged for review
+}
+/* Squad entry -> FPL player: the stored FPL id wins, then the exact name rules. */
+function matchEntry(p, pool) {
+  if (p && p.fpl_id != null) { const f = pool.find(x => x.id === p.fpl_id); if (f) return f; }
+  return matchPlayer(p && p.name, pool);
+}
+
+/* ---- spelling reconciliation -----------------------------------------------
+ * Names typed from a squad list often differ from FPL's (accents, full vs short
+ * names, mononyms, a typo). Within the player's OWN club only, every word of the
+ * listed name must appear in FPL's first / second / display name (one letter of
+ * slack on words of 5+ letters). A unique hit is linked by FPL id and the entry
+ * is renamed to FPL's display name so the site matches it too. Every rename is
+ * logged; anything still unmatched or ambiguous is flagged, never guessed. */
+function near(a, b) {
+  if (a === b) return true;
+  if (Math.min(a.length, b.length) < 5 || Math.abs(a.length - b.length) > 1) return false;
+  let i = 0, j = 0, edits = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { i++; j++; continue; }
+    if (++edits > 1) return false;
+    if (a.length > b.length) i++; else if (b.length > a.length) j++; else { i++; j++; }
+  }
+  return edits + (a.length - i) + (b.length - j) <= 1;
+}
+function fuzzyFind(name, pool) {
+  const words = strip(name).split(' ').filter(w => w.length > 1);
+  if (!words.length) return [];
+  const toks = fp => strip(`${fp.first_name} ${fp.second_name} ${fp.web_name}`).split(' ');
+  let hits = pool.filter(fp => { const t = toks(fp); return words.every(w => t.some(x => near(w, x))); });
+  if (!hits.length) hits = pool.filter(fp => { const wn = strip(fp.web_name); return wn.length > 3 && words.includes(wn); });
+  if (!hits.length && words.length > 1) {
+    const last = words[words.length - 1];
+    hits = pool.filter(fp => strip(fp.second_name).split(' ').some(x => near(last, x)) && strip(fp.first_name)[0] === words[0][0]);
+  }
+  return hits;
+}
+function reconcileNames(squads, players, clubOf, log) {
+  log.renamed = [];
+  clubOf.forEach((club, teamId) => {
+    const pool = players.filter(fp => fp.team === teamId);
+    const claimed = new Set();
+    const pending = [];
+    club.players.forEach(p => {
+      const idHit = p.fpl_id != null && pool.find(x => x.id === p.fpl_id);
+      const hits = idHit ? [idHit] : findPlayers(p.name, pool);
+      if (hits.length === 1 && !claimed.has(hits[0].id)) { p.fpl_id = hits[0].id; claimed.add(hits[0].id); }
+      else pending.push(p);
+    });
+    pending.forEach(p => {
+      const hits = fuzzyFind(p.full_name || p.name, pool).filter(fp => !claimed.has(fp.id));
+      if (hits.length !== 1) {
+        if (hits.length > 1) log.review.push({ club: club.name, player: p.name, reason: `Spelling check - could be ${hits.map(h => h.web_name).join(' or ')}. Pick the right one in admin.` });
+        return;
+      }
+      const fp = hits[0];
+      claimed.add(fp.id);
+      p.fpl_id = fp.id;
+      if (!p.full_name) p.full_name = p.name;
+      if (p.name !== fp.web_name) { log.renamed.push({ club: club.name, from: p.name, to: fp.web_name }); p.name = fp.web_name; }
+    });
+  });
 }
 
 /* ---- league table computed from finished fixtures -------------------------
@@ -160,7 +228,7 @@ function clubWIscore(club, players, teams, tierWeights) {
         (club.youth || []).map(n => ({ name: n, tier: 'youth' })));
   let total = 0;
   list.forEach(p => {
-    const fp = matchPlayer(p.name, pool);
+    const fp = matchEntry(p, pool);
     if (isOut(fp)) total += (typeof p.score === 'number') ? p.score : tierWeights[p.tier];
   });
   return Math.round(total * 100) / 100;
@@ -244,6 +312,101 @@ function applyFeed(squads, feed, log) {
   });
 }
 
+/* ---- squad rules: every club re-tiered nightly from live FPL data ----------
+ * Pool = every player FPL lists at the club (missing ones are added).
+ * Value = FPL price as a percentile among every player at his position in
+ * the league (so a £5.3m midfielder and a £4.9m defender are compared fairly).
+ * FPL sets prices on a player's standing, not his current form or fitness, so
+ * an injured first-teamer keeps his tier. Total points only break ties.
+ *   First choice (incl. Best): squadRules.firstChoice - a valid XI core: 1 GK,
+ *     4+ DEF, 3+ MID, 1+ FWD, max 1 GK.
+ *   First sub: squadRules.firstSub - always includes the back-up keeper.
+ *   Youth / rotation: the rest, up to squadRules.maxSquad. Injured players
+ *     take these places ahead of fit fringe players.
+ * 'Best' is editorial and is never changed here unless he has left. */
+const POS = { 1: 'GK', 2: 'DEF', 3: 'MID', 4: 'FWD' };
+const ANCHOR = { best: 5, first: 3, sub: 2, youth: 1 };
+const TIER_LABEL = { best: 'Best', first: 'First choice', sub: 'First sub', youth: 'Youth / rotation' };
+function applySquadRules(squads, players, clubOf, log) {
+  const R = squads.squadRules || (squads.squadRules = {});
+  if (squads.tiersLocked) {
+    // Tiers come from the editorial squad list: only refresh price / points.
+    log.added = []; log.trimmed = []; log.retiered = [];
+    clubOf.forEach((club, teamId) => {
+      const pool = players.filter(fp => fp.team === teamId);
+      club.players.forEach(p => {
+        const fp = matchEntry(p, pool);
+        if (fp) Object.assign(p, { fpl_id: fp.id, price: fp.price, tp: fp.tp, pos: POS[fp.element_type] || p.pos });
+      });
+    });
+    log.squadRules = { maxSquad: R.maxSquad || 30, firstChoice: R.firstChoice || 15, firstSub: R.firstSub || 9, locked: true };
+    return;
+  }
+  const MAX = R.maxSquad || 30, FIRST = R.firstChoice || 13, SUB = R.firstSub || 9;
+  log.added = []; log.trimmed = []; log.retiered = [];
+  const pricesAt = {};
+  players.forEach(p => { if (p.price != null && !isDeparted(p)) (pricesAt[p.element_type] = pricesAt[p.element_type] || []).push(p.price); });
+  const pct = (t, price) => { const xs = pricesAt[t] || []; if (!xs.length || price == null) return 0; return xs.filter(x => x < price).length / xs.length + 0.5 * xs.filter(x => x === price).length / xs.length; };
+  const flagged = fp => !!fp && (['d', 'i', 's', 'n'].includes(fp.status) || (fp.chance_next != null && fp.chance_next < 75));
+  const r2 = x => Math.round(x * 100) / 100;
+
+  clubOf.forEach((club, teamId) => {
+    const pool = players.filter(fp => fp.team === teamId && !isDeparted(fp));
+    const rows = [], fixed = [];
+    club.players.forEach(p => {
+      const fp = matchEntry(p, pool);
+      if (fp) rows.push({ p, fp, was: p.tier, isNew: false });
+      else fixed.push(p); // ambiguous / unmatched: keep exactly as is
+    });
+    pool.forEach(fp => {
+      if (rows.some(r => r.fp === fp)) return;
+      rows.push({ p: { name: fp.web_name, tier: 'youth', score: null, auto_added: true }, fp, was: null, isNew: true });
+    });
+    const lead = Math.max(1, ...rows.map(r => r.fp.tp || 0));
+    rows.forEach(r => {
+      const priceS = pct(r.fp.element_type, r.fp.price);
+      const ptsS = Math.max(0, r.fp.tp || 0) / lead;
+      r.hurt = flagged(r.fp);
+      r.v = priceS + 0.001 * ptsS;
+      r.pos = POS[r.fp.element_type] || r.p.pos || null;
+      Object.assign(r.p, { pos: r.pos, price: r.fp.price, tp: r.fp.tp });
+    });
+    rows.sort((a, b) => b.v - a.v);
+
+    const fixedN = t => fixed.filter(p => p.tier === t).length;
+    const take = new Set();
+    const best = fixedN('best') ? null : (rows.find(r => r.p.tier === 'best') || rows[0]);
+    if (best) { take.add(best); best.tier = 'best'; }
+    const firstRows = best ? [best] : [];
+    const FIRST_CAP = FIRST - fixedN('first') - fixedN('best'), SUB_CAP = SUB - fixedN('sub');
+    const cnt = pos => firstRows.filter(r => r.pos === pos).length + fixed.filter(p => (p.tier === 'first' || p.tier === 'best') && p.pos === pos).length;
+    const pick = (r, tier, into) => { take.add(r); r.tier = tier; if (into) into.push(r); };
+    [['GK', 1], ['DEF', 4], ['MID', 3], ['FWD', 1]].forEach(([pos, min]) => {
+      rows.filter(r => !take.has(r) && r.pos === pos).slice(0, Math.max(0, min - cnt(pos))).forEach(r => pick(r, 'first', firstRows));
+    });
+    rows.filter(r => !take.has(r) && !(r.pos === 'GK' && cnt('GK') >= 1)).forEach(r => { if (firstRows.length < FIRST_CAP) pick(r, 'first', firstRows); });
+    const subs = [];
+    const gk2 = rows.find(r => !take.has(r) && r.pos === 'GK');
+    if (gk2 && SUB_CAP > 0) pick(gk2, 'sub', subs);
+    rows.filter(r => !take.has(r)).forEach(r => { if (subs.length < SUB_CAP) pick(r, 'sub', subs); });
+    const room = Math.max(0, MAX - take.size - fixed.length);
+    rows.filter(r => !take.has(r)).sort((a, b) => (b.hurt - a.hurt) || (b.v - a.v)).slice(0, room).forEach(r => pick(r, 'youth'));
+
+    const kept = rows.filter(r => take.has(r));
+    kept.forEach(r => {
+      const old = typeof r.p.score === 'number' && r.was ? r.p.score - ANCHOR[r.was] : null;
+      const offset = old != null ? Math.max(-0.5, Math.min(0.5, old)) : (r.v - 0.5) * 0.5;
+      if (r.isNew || r.was !== r.tier) r.p.score = r2(Math.max(0.1, ANCHOR[r.tier] + offset));
+      if (r.isNew) log.added.push({ player: r.p.name, club: club.name, tier: r.tier, status: r.fp.status, news: r.fp.news || '' });
+      else if (r.was !== r.tier) log.retiered.push({ player: r.p.name, club: club.name, from: r.was, to: r.tier });
+      r.p.tier = r.tier;
+    });
+    rows.filter(r => !take.has(r) && !r.isNew).forEach(r => log.trimmed.push({ player: r.p.name, club: club.name, reason: `Outside the ${MAX}-man squad on FPL price + points` }));
+    club.players = kept.map(r => r.p).concat(fixed);
+  });
+  log.squadRules = { maxSquad: MAX, firstChoice: FIRST, firstSub: SUB };
+}
+
 /* ---- squads.json <-> live FPL reconciliation ------------------------------ */
 function reconcileSquads(squads, players, teams) {
   const log = { generated: new Date().toISOString(), moves: [], out: [], review: [] };
@@ -260,20 +423,26 @@ function reconcileSquads(squads, players, teams) {
       (c.youth || []).map(n => ({ name: n, tier: 'youth' })));
   } };
   squads.clubs.forEach(ensurePlayers);
+  reconcileNames(squads, players, clubOf, log);
 
   squads.clubs.forEach(club => {
     const team = teams.find(t => t.name === club.name || t.short_name === club.short);
     const pool = team ? players.filter(p => p.team === team.id) : [];
     club.players.slice().forEach(p => {
-      const inClub = matchPlayer(p.name, pool);
+      const inClub = matchEntry(p, pool);
       if (inClub && !isDeparted(inClub)) return; // still here, all good
 
-      const fp = inClub || matchPlayer(p.name, players);
+      const fp = inClub || matchEntry(p, players);
       if (!fp) {
         // Ambiguous name -> leave alone and ask a human. Genuinely absent from the
         // league's player list -> the player has left; drop them from the squad.
         if (findPlayers(p.name, players).length > 1) {
           log.review.push({ club: club.name, player: p.name, reason: 'Ambiguous name - several FPL players match. Fix in Transfer desk.' });
+          return;
+        }
+        if (squads.tiersLocked && p.listed) {
+          // On your squad list but not found in FPL: keep him and ask, never delete.
+          log.review.push({ club: club.name, player: p.name, reason: 'On the squad list but not found in FPL data - kept. Check spelling or remove if he has left.' });
           return;
         }
         club.players = club.players.filter(x => x !== p);
@@ -296,6 +465,7 @@ function reconcileSquads(squads, players, teams) {
     });
   });
 
+  applySquadRules(squads, players, clubOf, log);
   // Re-derive the tier arrays.
   rebuildTiers(squads, log);
 
@@ -427,6 +597,7 @@ async function main() {
     id: p.id, web_name: p.web_name, first_name: p.first_name, second_name: p.second_name,
     team: p.team, status: p.status, chance_this: p.chance_of_playing_this_round,
     chance_next: p.chance_of_playing_next_round, news: p.news || '',
+    element_type: p.element_type, price: p.now_cost != null ? p.now_cost / 10 : null, tp: p.total_points ?? null,
   }));
 
   const events = data.events || [];
@@ -463,6 +634,13 @@ async function main() {
 
     writeJson('squads.json', squads);
     writeJson('transfers.json', log);
+    if (log.renamed.length) console.log(`squads.json - fixed ${log.renamed.length} spellings to FPL names: ${log.renamed.map(r => `${r.from} -> ${r.to} (${r.club})`).join(', ')}`);
+    const unmatched = log.review.filter(r => /not found in FPL|Spelling check/.test(r.reason));
+    console.log(unmatched.length ? `squads.json - ${unmatched.length} names still need a look: ${unmatched.map(r => `${r.player} (${r.club})`).join(', ')}` : 'squads.json - every listed player matched to FPL.');
+    console.log(`squads.json - ${log.squadRules.locked ? 'tiers locked to your squad list, ' : ''}squad rules ${log.squadRules.maxSquad} max / ${log.squadRules.firstChoice} first choice / ${log.squadRules.firstSub} first sub: ` +
+      `${log.added.length} added, ${log.retiered.length} re-tiered, ${log.trimmed.length} trimmed.`);
+    if (log.added.length) console.log(`  added: ${log.added.map(a => `${a.player} (${a.club}, ${TIER_LABEL[a.tier]})`).join(', ')}`);
+    squads.clubs.forEach(c => console.log(`  ${c.short}: ${c.players.length} players - ${['best', 'first', 'sub', 'youth'].map(t => c.players.filter(p => p.tier === t).length).join('/')}`));
     console.log(`transfers.json - ${log.moves.length} moved, ${log.out.length} removed, ${log.arrivals.length} arrivals to weight, ${log.review.length} to review.`);
 
     const r = await rebuildHistory(hist, squads, data, players, rawTeams, fixtures, live);
