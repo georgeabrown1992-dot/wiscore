@@ -407,10 +407,157 @@ function applySquadRules(squads, players, clubOf, log) {
   log.squadRules = { maxSquad: MAX, firstChoice: FIRST, firstSub: SUB };
 }
 
+/* ---- dynamic tiers: minutes-driven squad selection -------------------------
+ * Every finished gameweek, each player's INVOLVEMENT is measured from FPL's
+ * live minutes: share of his club's available minutes (75%) and starts (25%)
+ * over his last 6 eligible gameweeks, recent weeks weighted most (x0.85/week).
+ * Gameweeks his club didn't play, or he was flagged injured/suspended before
+ * the deadline, don't count against him.
+ *   value = 70% involvement + 15% your squad-list tier + 15% FPL price
+ * Squads are then re-picked: 15 First choice (incl. Best), 9 First sub, the
+ * rest Youth / rotation up to 30. A player must beat the man above the line by
+ * a margin to swap, so one bench week doesn't drop anyone.
+ * Injured / suspended players and anyone LOCKED in admin are frozen in their
+ * tier, at the value they held while fit - an injury never lowers a score.
+ * Weights inside each tier follow value, so the core 24 always total 65.00. */
+const LIVE_URL = gw => `https://fantasy.premierleague.com/api/event/${gw}/live/`;
+const DYN = { window: 6, decay: 0.85, stick: 0.05, minGws: 2 };
+const isFlagged = fp => !!fp && (['i', 's', 'n'].includes(fp.status) || (fp.status === 'd' && fp.chance_next != null && fp.chance_next < 50));
+
+async function loadMinutes(data, players) {
+  const m = readJson('minutes.json') || {};
+  m.gameweeks = m.gameweeks || {}; m.availability = m.availability || {};
+  const events = data.events || [];
+  const finished = events.filter(e => e.finished && e.data_checked).map(e => e.id).sort((a, b) => a - b);
+  const todo = finished.filter(g => !m.gameweeks[g]);
+  const latest = finished[finished.length - 1];
+  if (latest && !todo.includes(latest)) todo.push(latest); // pick up late FPL corrections
+  for (const g of todo) {
+    const j = await fetchJson(LIVE_URL(g));
+    if (!j || !Array.isArray(j.elements)) { console.warn(`minutes - GW${g} live data unavailable`); continue; }
+    const row = {};
+    j.elements.forEach(e => { const s = e.stats || {}; if (s.minutes) row[e.id] = [s.minutes, s.starts || 0]; });
+    m.gameweeks[g] = row;
+  }
+  // Snapshot who is flagged before the next deadline (overwritten nightly until it passes).
+  const next = events.find(e => e.is_next);
+  if (next) m.availability[next.id] = players.filter(isFlagged).map(p => p.id);
+  m.updated = new Date().toISOString();
+  return { m, finished: finished.filter(g => m.gameweeks[g]) };
+}
+
+function dynamicTiers(squads, players, clubOf, fixtures, mins, finished, log) {
+  const R = squads.squadRules || {};
+  const MAX = R.maxSquad || 30, FIRST = R.firstChoice || 15, SUB = R.firstSub || 9;
+  const latest = finished[finished.length - 1] || null;
+  log.dynamic = [];
+  const games = {};
+  (fixtures || []).forEach(f => { if (!f.finished || !f.event) return; const g = games[f.event] || (games[f.event] = {}); g[f.team_h] = (g[f.team_h] || 0) + 1; g[f.team_a] = (g[f.team_a] || 0) + 1; });
+  const pricesAt = {};
+  players.forEach(p => { if (p.price != null && !isDeparted(p)) (pricesAt[p.element_type] = pricesAt[p.element_type] || []).push(p.price); });
+  const pct = (t, price) => { const xs = pricesAt[t] || []; if (!xs.length || price == null) return 0; return (xs.filter(x => x < price).length + 0.5 * xs.filter(x => x === price).length) / xs.length; };
+  const PRIOR = { best: 1, first: 0.75, sub: 0.45, youth: 0.15 };
+  const r2 = x => Math.round(x * 100) / 100;
+
+  const involvement = (fp, teamId) => {
+    const gws = finished.filter(g => games[g] && games[g][teamId]);
+    const mOf = g => (mins.gameweeks[g] || {})[fp.id] || [0, 0];
+    const out = new Set(gws.filter(g => (mins.availability[g] || []).includes(fp.id)));
+    // Older weeks have no deadline snapshot: if he is injured now, his run of 0s is the injury.
+    if (isFlagged(fp)) for (let k = gws.length - 1; k >= 0 && mOf(gws[k])[0] === 0; k--) out.add(gws[k]);
+    const elig = gws.filter(g => !out.has(g)).slice(-DYN.window);
+    const total = elig.reduce((s, g) => s + mOf(g)[0], 0);
+    if (elig.length < DYN.minGws) return { i: null, n: elig.length, mins: total };
+    let s = 0, sw = 0;
+    elig.forEach((g, k) => {
+      const w = Math.pow(DYN.decay, elig.length - 1 - k), n = games[g][teamId], [mn, st] = mOf(g);
+      s += w * (0.75 * Math.min(1, mn / (90 * n)) + 0.25 * Math.min(1, st / n)); sw += w;
+    });
+    return { i: s / sw, n: elig.length, mins: total };
+  };
+
+  clubOf.forEach((club, teamId) => {
+    const pool = players.filter(fp => fp.team === teamId);
+    const known = new Set();
+    club.players.forEach(p => { const f = matchEntry(p, pool); if (f) { p.fpl_id = f.id; known.add(f.id); } });
+    // Academy players who break through get picked up automatically.
+    pool.forEach(fp => {
+      if (known.has(fp.id) || isDeparted(fp)) return;
+      const inv = involvement(fp, teamId);
+      if (inv.mins < 90) return;
+      club.players.push({ name: fp.web_name, fpl_id: fp.id, tier: 'youth', base_tier: 'youth', score: 1, pos: POS[fp.element_type] || null, price: fp.price, tp: fp.tp, auto_added: true });
+      log.dynamic.push({ club: club.name, player: fp.web_name, from: null, to: 'youth', gw: latest, reason: `Not on the squad list but has played ${inv.mins} mins - added` });
+    });
+
+    const rows = club.players.map(p => {
+      const fp = matchEntry(p, pool);
+      if (!p.base_tier) p.base_tier = p.tier;
+      const inv = fp ? involvement(fp, teamId) : { i: null, n: 0, mins: 0 };
+      const q = fp ? pct(fp.element_type, fp.price) : 0;
+      const prior = PRIOR[p.base_tier] ?? 0.15;
+      const v = inv.i == null ? 0.7 * prior + 0.3 * q : 0.7 * inv.i + 0.15 * prior + 0.15 * q;
+      const why = p.locked ? 'locked' : !fp ? 'unmatched' : isFlagged(fp) ? 'injured' : null;
+      const prev = p.dyn || {};
+      const vUse = why && prev.v_fit != null ? prev.v_fit : v;
+      p.dyn = { involvement: inv.i == null ? null : r2(inv.i), gws: inv.n, minutes: inv.mins, value: Math.round(vUse * 1000) / 1000,
+        v_fit: why ? (prev.v_fit ?? v) : v, frozen: why, gw: latest };
+      return { p, fp, v: vUse, q, i: inv.i, was: p.tier, frozen: !!why, pos: (fp && POS[fp.element_type]) || p.pos };
+    });
+
+    const tierOf = new Map();
+    rows.filter(r => r.frozen).forEach(r => tierOf.set(r, r.was));
+    const inFirst = t => t === 'first' || t === 'best';
+    const used = tier => [...tierOf.values()].filter(t => tier === 'first' ? inFirst(t) : t === tier).length;
+    const heldAtLeast = (r, tier) => tier === 'first' ? inFirst(r.was) : (inFirst(r.was) || r.was === 'sub');
+    const fill = (tier, cap) => {
+      const cand = rows.filter(r => !tierOf.has(r)).sort((a, b) => (b.v + heldAtLeast(b, tier) * DYN.stick) - (a.v + heldAtLeast(a, tier) * DYN.stick));
+      if (tier === 'first' && ![...tierOf].some(([r, t]) => inFirst(t) && r.pos === 'GK')) {
+        const gk = cand.find(r => r.pos === 'GK');
+        if (gk && used('first') < cap) tierOf.set(gk, 'first');
+      }
+      cand.forEach(r => { if (!tierOf.has(r) && used(tier) < cap) tierOf.set(r, tier); });
+    };
+    fill('first', FIRST);
+    fill('sub', SUB);
+    rows.forEach(r => { if (!tierOf.has(r)) tierOf.set(r, 'youth'); });
+
+    // Best: most important first-choice outfield player (minutes x quality).
+    const firsts = rows.filter(r => inFirst(tierOf.get(r)));
+    const lockedBest = firsts.find(r => r.frozen && r.was === 'best');
+    const bq = r => 0.5 * (r.i == null ? 0.75 : r.i) + 0.5 * r.q + (r.was === 'best' ? DYN.stick : 0);
+    const best = lockedBest || firsts.filter(r => r.pos !== 'GK').sort((a, b) => bq(b) - bq(a))[0] || firsts[0];
+    firsts.forEach(r => tierOf.set(r, 'first'));
+    if (best) tierOf.set(best, 'best');
+
+    const drop = new Set(rows.filter(r => tierOf.get(r) === 'youth' && !r.frozen).sort((a, b) => a.v - b.v).slice(0, Math.max(0, rows.length - MAX)));
+    const kept = rows.filter(r => !drop.has(r));
+    ['first', 'sub', 'youth'].forEach(t => {
+      const g = kept.filter(r => tierOf.get(r) === t).sort((a, b) => b.v - a.v);
+      g.forEach((r, k) => { r.p.score = r2(ANCHOR[t] + 0.4 - 0.8 * k / Math.max(1, g.length - 1)); });
+    });
+    if (best) best.p.score = ANCHOR.best;
+
+    kept.forEach(r => {
+      const t = tierOf.get(r);
+      if (r.was && r.was !== t) {
+        r.p.moved = { from: r.was, to: t, gw: latest };
+        log.dynamic.push({ club: club.name, player: r.p.name, from: r.was, to: t, gw: latest,
+          reason: r.i == null ? 'Not enough games yet - squad list and price' : `${Math.round(r.i * 100)}% of available minutes over his last ${r.p.dyn.gws} GWs` });
+      }
+      r.p.tier = t;
+    });
+    drop.forEach(r => log.dynamic.push({ club: club.name, player: r.p.name, from: r.was, to: null, gw: latest, reason: `Outside the ${MAX}-man squad on minutes` }));
+    club.players = kept.map(r => r.p);
+  });
+  squads.dynamic = { enabled: true, through_gw: latest, window: DYN.window, updated: new Date().toISOString(),
+    method: '70% minutes involvement (last 6 eligible GWs, recent weighted) + 15% squad-list tier + 15% FPL price. Injured and locked players frozen.' };
+}
+
 /* ---- squads.json <-> live FPL reconciliation ------------------------------ */
 function reconcileSquads(squads, players, teams) {
   const log = { generated: new Date().toISOString(), moves: [], out: [], review: [] };
   const clubOf = new Map(); // fpl team id -> squad club
+  Object.defineProperty(log, 'clubOf', { value: clubOf, enumerable: false });
   squads.clubs.forEach(c => {
     const t = teams.find(t => t.name === c.name || t.short_name === c.short);
     if (t) clubOf.set(t.id, c); else log.review.push({ club: c.name, reason: 'No matching FPL team - check name/short.' });
@@ -628,6 +775,13 @@ async function main() {
     try { feed = await loadTransferFeed(); } catch (e) { feed.error = String(e.message || e); }
     writeJson('transfer-feed.json', feed);
     applyFeed(squads, feed, log);
+    if (squads.dynamicTiers !== false) {
+      const { m, finished } = await loadMinutes(data, players);
+      writeJson('minutes.json', m);
+      dynamicTiers(squads, players, log.clubOf, fixtures, m, finished, log);
+      console.log(`dynamic tiers - minutes through GW${squads.dynamic.through_gw ?? '-'}: ${log.dynamic.length} changes` +
+        (log.dynamic.length ? `\n  ${log.dynamic.map(d => `${d.player} (${d.club}) ${d.from ? TIER_LABEL[d.from] : 'new'} -> ${d.to ? TIER_LABEL[d.to] : 'out'}: ${d.reason}`).join('\n  ')}` : ''));
+    }
     rebuildTiers(squads, log);
     squads.generated = new Date().toISOString();
     console.log(feed.error ? `transfer feed - ${feed.error}` : `transfer feed - ${feed.rows.length} deals read.`);
