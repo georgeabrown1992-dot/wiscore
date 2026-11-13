@@ -1327,7 +1327,6 @@ function SquadGrid({ club, squads }) {
                 <div key=${m.name} style=${{ fontSize: 13, padding: '4px 0', color: '#f6f5f2', display: 'flex', alignItems: 'center', gap: 6 }}>
                   <span>${m.name}</span>
                   ${moveOf(m.name) && html`<span title=${(moveOf(m.name) === 'up' ? 'Moved up' : 'Moved down') + ' on minutes played, GW' + infoOf[m.name].moved.gw} style=${{ fontSize: 11, fontWeight: 700, color: moveOf(m.name) === 'up' ? '#4cc47a' : '#ff6b5a' }}>${moveOf(m.name) === 'up' ? '▲' : '▼'}</span>`}
-                  ${infoOf[m.name]?.dyn?.involvement != null && html`<span style=${{ marginLeft: 'auto', fontSize: 11, color: '#8a8985', fontVariantNumeric: 'tabular-nums' }}>${Math.round(infoOf[m.name].dyn.involvement * 100)}%</span>`}
                 </div>
               `)}
         </div>
@@ -1398,7 +1397,7 @@ function Methodology() {
           <h3>A squad that moves with the season</h3>
           <p>Squad hierarchies aren't fixed in August. After every gameweek, WIscore re-reads each club's team sheets and re-ranks the squad on who is actually being trusted: minutes, starts and recent form of selection, with the latest weeks counting most. The academy kid who has started six in a row climbs into the first choice; the senior name who hasn't been off the bench since September slides down - and his absence counts for less, because it costs his team less.</p>
           <p>A player is never demoted for being injured. Weeks missed through injury or suspension don't count against him, and while he's out he holds the place he'd earned while fit. Promotion has to be earned over more than one game, so a single rotation week doesn't reshuffle the table.</p>
-          <p>On each club page, a player's share of available minutes is shown beside his name, with <span style=${{ color: '#4cc47a', fontWeight: 700 }}>▲</span> or <span style=${{ color: '#ff6b5a', fontWeight: 700 }}>▼</span> when he has moved tier in the last two gameweeks.</p>
+          <p>On each club page, <span style=${{ color: '#4cc47a', fontWeight: 700 }}>▲</span> or <span style=${{ color: '#ff6b5a', fontWeight: 700 }}>▼</span> beside a player's name shows he has moved tier in the last two gameweeks.</p>
         </div>
         <div class="meth-section">
           <h3>Squad structure</h3>
