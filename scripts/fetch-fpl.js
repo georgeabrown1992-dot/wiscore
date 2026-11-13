@@ -426,6 +426,8 @@ function applySquadRules(squads, players, clubOf, log) {
 const LIVE_URL = gw => `https://fantasy.premierleague.com/api/event/${gw}/live/`;
 const DYN = { window: 6, decay: 0.85, stick: 0.05, minGws: 2 };
 const isFlagged = fp => !!fp && (['i', 's', 'n'].includes(fp.status) || (fp.status === 'd' && fp.chance_next != null && fp.chance_next < 50));
+// Any injury / doubt news at all - used so weeks missed while not fully fit never count against a player.
+const isUnavailable = fp => !!fp && (fp.status !== 'a' || (fp.chance_next != null && fp.chance_next < 100));
 
 async function loadMinutes(data, players) {
   const m = readJson('minutes.json') || {};
@@ -444,7 +446,7 @@ async function loadMinutes(data, players) {
   }
   // Snapshot who is flagged before the next deadline (overwritten nightly until it passes).
   const next = events.find(e => e.is_next);
-  if (next) m.availability[next.id] = players.filter(isFlagged).map(p => p.id);
+  if (next) m.availability[next.id] = players.filter(isUnavailable).map(p => p.id);
   m.updated = new Date().toISOString();
   return { m, finished: finished.filter(g => m.gameweeks[g]) };
 }
@@ -521,7 +523,7 @@ function dynamicTiers(squads, players, clubOf, fixtures, mins, finished, log) {
     const mOf = g => (mins.gameweeks[g] || {})[fp.id] || [0, 0];
     const out = new Set(gws.filter(g => (mins.availability[g] || []).includes(fp.id)));
     // Older weeks have no deadline snapshot: if he is injured now, his run of 0s is the injury.
-    if (isFlagged(fp)) for (let k = gws.length - 1; k >= 0 && mOf(gws[k])[0] === 0; k--) out.add(gws[k]);
+    if (isUnavailable(fp)) for (let k = gws.length - 1; k >= 0 && mOf(gws[k])[0] === 0; k--) out.add(gws[k]);
     const allElig = gws.filter(g => !out.has(g));
     const elig = allElig.slice(-DYN.window);
     // Whole-season record (every eligible gameweek so far), alongside the recent window.
@@ -571,18 +573,22 @@ function dynamicTiers(squads, players, clubOf, fixtures, mins, finished, log) {
       if (!p.base_tier) p.base_tier = p.tier;
       const inv = fp ? involvement(fp, teamId) : { i: null, n: 0, mins: 0 };
       const q = fp ? pct(fp.element_type, fp.price) : 0;
-      const prior = PRIOR[p.base_tier] ?? 0.15;
+      // Players the job added itself have no squad-list tier: start them from their FPL price instead.
+      const prior = p.auto_added && fp ? (q >= 0.8 ? PRIOR.first : q >= 0.5 ? PRIOR.sub : PRIOR.youth) : (PRIOR[p.base_tier] ?? 0.15);
       const v = inv.i == null ? 0.7 * prior + 0.3 * q : 0.7 * inv.i + 0.15 * prior + 0.15 * q;
       // First sub vs Youth / rotation is decided by how often he's in the matchday
       // squad - a regular on the bench outranks an occasional cameo.
       const vs = inv.i == null ? v : 0.3 * inv.sq + 0.15 * (inv.season.squads / Math.max(1, inv.season.gws)) + 0.35 * inv.i + 0.1 * prior + 0.1 * q;
       const why = p._new ? null : p.locked ? 'locked' : !fp ? 'unmatched' : isFlagged(fp) ? 'injured' : null;
       const prev = p.dyn || {};
-      const vUse = why && prev.v_fit != null ? prev.v_fit : v;
-      const vsUse = why && prev.vs_fit != null ? prev.vs_fit : vs;
-      p.dyn = { involvement: inv.i == null ? null : r2(inv.i), gws: inv.n, minutes: inv.mins, squads: inv.apps ?? null, bench: inv.bench ?? null, season: inv.season || null, value: Math.round(vUse * 1000) / 1000,
-        v_fit: why ? (prev.v_fit ?? v) : v, vs_fit: why ? (prev.vs_fit ?? vs) : vs, frozen: why, gw: latest };
-      return { p, fp, v: vUse, vs: vsUse, q, i: inv.i, was: p.tier, frozen: !!why, pos: (fp && POS[fp.element_type]) || p.pos };
+      // Injured players are NOT frozen in their tier: their injury weeks are already excluded,
+      // so they're ranked on what they did while fit. Only locked / unmatched players are held.
+      const hold = why === 'locked' || why === 'unmatched';
+      const vUse = hold && prev.v_fit != null ? prev.v_fit : v;
+      const vsUse = hold && prev.vs_fit != null ? prev.vs_fit : vs;
+      p.dyn = { involvement: inv.i == null ? null : r2(inv.i), gws: inv.n, minutes: inv.mins, squads: inv.apps ?? null, bench: inv.bench ?? null, season: inv.season || null, pq: r2(q), value: Math.round(vUse * 1000) / 1000,
+        v_fit: hold ? (prev.v_fit ?? v) : v, vs_fit: hold ? (prev.vs_fit ?? vs) : vs, frozen: why, gw: latest };
+      return { p, fp, v: vUse, vs: vsUse, q, i: inv.i, was: p.tier, frozen: hold, pos: (fp && POS[fp.element_type]) || p.pos };
     });
 
     const tierOf = new Map();
@@ -666,9 +672,26 @@ function buildAlerts(squads, players, log) {
     if (inn.length) bits.push(`added ${inn.length} from FPL's squad (${inn.join(', ')})`);
     const mv = ch.filter(d => d.from && d.to);
     if (mv.length) bits.push(`${mv.length} tier change${mv.length > 1 ? 's' : ''} on minutes`);
-    if (missing.length || bits.length) alerts.clubs[club.name] = {
-      missing, added: [],
-      note: bits.length ? `Fixed automatically: ${bits.join('; ')}.` + (outside ? ` ${outside} fringe FPL player${outside > 1 ? 's' : ''} sit outside the ${squads.squadRules?.maxSquad || 30}-man squad.` : '') : '',
+    // Sanity checks: anything that looks like a mis-tier gets surfaced, every club, every night.
+    const checks = [];
+    club.players.forEach(p => {
+      const d = p.dyn, s = d && d.season;
+      if (!d || p.locked) return;
+      const hurt = !!d.frozen && d.frozen !== 'locked';
+      if (p.tier === 'youth' && s && s.gws >= 3 && (s.minutes >= 270 || s.squads / s.gws >= 0.5))
+        checks.push(`${p.name} is Youth / rotation but has ${s.squads}/${s.gws} matchday squads and ${s.minutes} mins this season`);
+      else if (p.tier === 'youth' && d.pq >= 0.85 && !(s && s.gws >= 4 && s.squads === 0))
+        checks.push(`${p.name} is Youth / rotation but priced in the top 15% at his position`);
+      if ((p.tier === 'first' || p.tier === 'best' || p.tier === 'sub') && !hurt && s && s.gws >= 4 && s.squads === 0)
+        checks.push(`${p.name} is ${TIER_LABEL[p.tier]} but hasn't made a matchday squad all season`);
+      if ((p.tier === 'first' || p.tier === 'best') && !hurt && d.involvement != null && d.involvement < 0.15 && d.gws >= 4)
+        checks.push(`${p.name} is First choice but has barely featured over his last ${d.gws} games`);
+    });
+    if (checks.length) (log.checks = log.checks || []).push(...checks.map(c => `${club.short}: ${c}`));
+    if (missing.length || bits.length || checks.length) alerts.clubs[club.name] = {
+      missing, added: [], checks,
+      note: (bits.length ? `Fixed automatically: ${bits.join('; ')}.` + (outside ? ` ${outside} fringe FPL player${outside > 1 ? 's' : ''} sit outside the ${squads.squadRules?.maxSquad || 30}-man squad.` : '') : '')
+        + (checks.length ? `${bits.length ? '<br><br>' : ''}<strong>Worth a look:</strong> ${checks.join('; ')}.` : ''),
     };
   });
   return alerts;
@@ -907,6 +930,7 @@ async function main() {
     }
     rebuildTiers(squads, log);
     writeJson('squad-alerts.json', buildAlerts(squads, players, log));
+    console.log(log.checks && log.checks.length ? `sanity check - ${log.checks.length} tier${log.checks.length > 1 ? 's' : ''} worth a look:\n  ${log.checks.join('\n  ')}` : 'sanity check - every club passed.');
     squads.generated = new Date().toISOString();
     console.log(feed.error ? `transfer feed - ${feed.error}` : `transfer feed - ${feed.rows.length} deals read.`);
 
