@@ -480,13 +480,18 @@ function dynamicTiers(squads, players, clubOf, fixtures, mins, finished, log) {
     const pool = players.filter(fp => fp.team === teamId);
     const known = new Set();
     club.players.forEach(p => { const f = matchEntry(p, pool); if (f) { p.fpl_id = f.id; known.add(f.id); } });
-    // Academy players who break through get picked up automatically.
+    // Every player on FPL's roster for the club is a candidate - spelling can't hide anyone.
     pool.forEach(fp => {
       if (known.has(fp.id) || isDeparted(fp)) return;
       const inv = involvement(fp, teamId);
-      if (inv.mins < 90) return;
-      club.players.push({ name: fp.web_name, fpl_id: fp.id, tier: 'youth', base_tier: 'youth', score: 1, pos: POS[fp.element_type] || null, price: fp.price, tp: fp.tp, auto_added: true });
-      log.dynamic.push({ club: club.name, player: fp.web_name, from: null, to: 'youth', gw: latest, reason: `Not on the squad list but has played ${inv.mins} mins - added` });
+      club.players.push({ name: fp.web_name, fpl_id: fp.id, tier: 'youth', base_tier: 'youth', score: 1, pos: POS[fp.element_type] || null, price: fp.price, tp: fp.tp, auto_added: true, _new: true });
+      log.dynamic.push({ club: club.name, player: fp.web_name, from: null, to: 'youth', gw: latest, reason: inv.mins ? `On FPL's squad, not on the list - added (${inv.mins} mins)` : `On FPL's squad, not on the list - added` });
+    });
+    // Listed players FPL doesn't have at all can't be tracked for injury - remove them.
+    club.players = club.players.filter(p => {
+      if (matchEntry(p, pool)) return true;
+      log.dynamic.push({ club: club.name, player: p.name, from: p.tier, to: null, gw: latest, reason: 'Not on FPL\'s squad for this club (left, loaned or unregistered) - removed' });
+      return false;
     });
 
     const rows = club.players.map(p => {
@@ -496,7 +501,7 @@ function dynamicTiers(squads, players, clubOf, fixtures, mins, finished, log) {
       const q = fp ? pct(fp.element_type, fp.price) : 0;
       const prior = PRIOR[p.base_tier] ?? 0.15;
       const v = inv.i == null ? 0.7 * prior + 0.3 * q : 0.7 * inv.i + 0.15 * prior + 0.15 * q;
-      const why = p.locked ? 'locked' : !fp ? 'unmatched' : isFlagged(fp) ? 'injured' : null;
+      const why = p._new ? null : p.locked ? 'locked' : !fp ? 'unmatched' : isFlagged(fp) ? 'injured' : null;
       const prev = p.dyn || {};
       const vUse = why && prev.v_fit != null ? prev.v_fit : v;
       p.dyn = { involvement: inv.i == null ? null : r2(inv.i), gws: inv.n, minutes: inv.mins, value: Math.round(vUse * 1000) / 1000,
@@ -546,11 +551,44 @@ function dynamicTiers(squads, players, clubOf, fixtures, mins, finished, log) {
       }
       r.p.tier = t;
     });
-    drop.forEach(r => log.dynamic.push({ club: club.name, player: r.p.name, from: r.was, to: null, gw: latest, reason: `Outside the ${MAX}-man squad on minutes` }));
+    drop.forEach(r => {
+      const i = log.dynamic.findIndex(d => d.club === club.name && d.player === r.p.name && d.from === null);
+      if (r.p._new && i >= 0) log.dynamic.splice(i, 1); // added then trimmed: not a change
+      else log.dynamic.push({ club: club.name, player: r.p.name, from: r.was, to: null, gw: latest, reason: `Outside the ${MAX}-man squad on minutes` });
+    });
+    kept.forEach(r => { delete r.p._new; });
     club.players = kept.map(r => r.p);
   });
   squads.dynamic = { enabled: true, through_gw: latest, window: DYN.window, updated: new Date().toISOString(),
     method: '70% minutes involvement (last 6 eligible GWs, recent weighted) + 15% squad-list tier + 15% FPL price. Injured and locked players frozen.' };
+}
+
+/* Admin "Squad alerts": what still needs a human after the automatic fixes.
+ * missing = listed players with no FPL match; added = FPL players not in the
+ * squad; note = what was fixed automatically tonight. */
+function buildAlerts(squads, players, log) {
+  const alerts = { generated: new Date().toISOString(), clubs: {} };
+  log.clubOf.forEach((club, teamId) => {
+    const pool = players.filter(fp => fp.team === teamId && !isDeparted(fp));
+    const missing = club.players.filter(p => !matchEntry(p, pool)).map(p => p.name);
+    const ids = new Set(club.players.map(p => p.fpl_id).filter(x => x != null));
+    const outside = pool.filter(fp => !ids.has(fp.id)).length;
+    const ch = (log.dynamic || []).filter(d => d.club === club.name);
+    const rn = (log.renamed || []).filter(r => r.club === club.name);
+    const bits = [];
+    if (rn.length) bits.push(`linked ${rn.length} spelling${rn.length > 1 ? 's' : ''} to FPL (${rn.map(r => `${r.from} → ${r.to}`).join(', ')})`);
+    const gone = ch.filter(d => !d.to && /Not on FPL/.test(d.reason)).map(d => d.player);
+    if (gone.length) bits.push(`removed ${gone.length} not on FPL's squad (${gone.join(', ')})`);
+    const inn = ch.filter(d => !d.from).map(d => d.player);
+    if (inn.length) bits.push(`added ${inn.length} from FPL's squad (${inn.join(', ')})`);
+    const mv = ch.filter(d => d.from && d.to);
+    if (mv.length) bits.push(`${mv.length} tier change${mv.length > 1 ? 's' : ''} on minutes`);
+    if (missing.length || bits.length) alerts.clubs[club.name] = {
+      missing, added: [],
+      note: bits.length ? `Fixed automatically: ${bits.join('; ')}.` + (outside ? ` ${outside} fringe FPL player${outside > 1 ? 's' : ''} sit outside the ${squads.squadRules?.maxSquad || 30}-man squad.` : '') : '',
+    };
+  });
+  return alerts;
 }
 
 /* ---- squads.json <-> live FPL reconciliation ------------------------------ */
@@ -783,6 +821,7 @@ async function main() {
         (log.dynamic.length ? `\n  ${log.dynamic.map(d => `${d.player} (${d.club}) ${d.from ? TIER_LABEL[d.from] : 'new'} -> ${d.to ? TIER_LABEL[d.to] : 'out'}: ${d.reason}`).join('\n  ')}` : ''));
     }
     rebuildTiers(squads, log);
+    writeJson('squad-alerts.json', buildAlerts(squads, players, log));
     squads.generated = new Date().toISOString();
     console.log(feed.error ? `transfer feed - ${feed.error}` : `transfer feed - ${feed.rows.length} deals read.`);
 
