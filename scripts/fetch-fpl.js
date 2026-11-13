@@ -408,9 +408,12 @@ function applySquadRules(squads, players, clubOf, log) {
 }
 
 /* ---- dynamic tiers: minutes-driven squad selection -------------------------
- * Every finished gameweek, each player's INVOLVEMENT is measured from FPL's
- * live minutes: share of his club's available minutes (75%) and starts (25%)
- * over his last 6 eligible gameweeks, recent weeks weighted most (x0.85/week).
+ * Every finished gameweek, each player's INVOLVEMENT is measured from the real
+ * team sheets (ESPN line-ups: starters, subs used AND unused bench) plus FPL
+ * minutes: 60% share of available minutes, 20% starts, 20% named in the
+ * matchday squad, over his last 6 eligible gameweeks (recent weighted x0.85).
+ * A player who hasn't made a single matchday squad can't hold a First choice
+ * or First sub place unless he's injured or locked.
  * Gameweeks his club didn't play, or he was flagged injured/suspended before
  * the deadline, don't count against him.
  *   value = 70% involvement + 15% your squad-list tier + 15% FPL price
@@ -446,6 +449,60 @@ async function loadMinutes(data, players) {
   return { m, finished: finished.filter(g => m.gameweeks[g]) };
 }
 
+/* Team sheets: who was named in each matchday squad (incl. unused subs).
+ * FPL doesn't publish benches, so line-ups come from ESPN match summaries,
+ * matched to FPL players within each club. Stored per gameweek in minutes.json
+ * as { teams: [fpl team ids with a sheet], ids: { fplId: 2 played | 1 bench } }. */
+const ESPN_SUMMARY = id => `https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/summary?event=${id}`;
+async function loadSquadSheets(m, data, players, teams, fixtures, finished) {
+  m.squads = m.squads || {};
+  const latest = finished[finished.length - 1];
+  const need = finished.filter(g => !m.squads[g] || m.squads[g].teams.length < 20 || g >= latest - 1);
+  if (!need.length) return { gws: 0, sheets: 0, unmatched: 0 };
+  const events = data.events || [];
+  const ymd = d => d.toISOString().slice(0, 10).replace(/-/g, '');
+  const start = events.find(e => e.id === need[0]);
+  const from = new Date(start ? start.deadline_time : Date.now() - 300 * 864e5);
+  from.setUTCDate(from.getUTCDate() - 3);
+  const sb = await fetchJson(`https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard?dates=${ymd(from)}-${ymd(new Date())}&limit=1000`);
+  if (!sb || !Array.isArray(sb.events)) { console.warn('team sheets - ESPN scoreboard unavailable, using minutes only tonight'); return { gws: 0, sheets: 0, unmatched: 0 }; }
+  const byKey = new Map(teams.map(t => [clubKey(t.name), t.id]));
+  const idOf = tm => tm && [tm.displayName, tm.shortDisplayName, tm.name, tm.abbreviation].filter(Boolean).map(clubKey).map(k => byKey.get(k)).find(Boolean);
+  const gwOf = new Map();
+  (fixtures || []).forEach(f => { if (f.event) gwOf.set(`${f.team_h}-${f.team_a}`, f.event); });
+  const fresh = {};
+  let sheets = 0, unmatched = 0;
+  for (const ev of sb.events) {
+    const c = ev.competitions && ev.competitions[0];
+    const st = c && (c.status || ev.status);
+    if (!c || !st || !st.type || !st.type.completed) continue;
+    const h = c.competitors.find(x => x.homeAway === 'home'), a = c.competitors.find(x => x.homeAway === 'away');
+    const gw = gwOf.get(`${idOf(h && h.team)}-${idOf(a && a.team)}`);
+    if (!gw || !need.includes(gw)) continue;
+    const s = await fetchJson(ESPN_SUMMARY(ev.id));
+    if (!s || !Array.isArray(s.rosters)) continue;
+    const row = fresh[gw] || (fresh[gw] = { teams: [], ids: {} });
+    s.rosters.forEach(r => {
+      const tid = idOf(r.team);
+      const list = r.roster || [];
+      if (!tid || !list.length) return;
+      const pool = players.filter(p => p.team === tid);
+      list.forEach(e => {
+        const nm = e.athlete && (e.athlete.displayName || e.athlete.fullName);
+        if (!nm) return;
+        let hit = findPlayers(nm, pool);
+        if (hit.length !== 1) hit = fuzzyFind(nm, pool);
+        if (hit.length === 1) row.ids[hit[0].id] = (e.starter || e.subbedIn) ? 2 : 1;
+        else unmatched++;
+      });
+      if (!row.teams.includes(tid)) row.teams.push(tid);
+      sheets++;
+    });
+  }
+  Object.entries(fresh).forEach(([g, row]) => { m.squads[g] = row; });
+  return { gws: Object.keys(fresh).length, sheets, unmatched };
+}
+
 function dynamicTiers(squads, players, clubOf, fixtures, mins, finished, log) {
   const R = squads.squadRules || {};
   const MAX = R.maxSquad || 30, FIRST = R.firstChoice || 15, SUB = R.firstSub || 9;
@@ -465,15 +522,30 @@ function dynamicTiers(squads, players, clubOf, fixtures, mins, finished, log) {
     const out = new Set(gws.filter(g => (mins.availability[g] || []).includes(fp.id)));
     // Older weeks have no deadline snapshot: if he is injured now, his run of 0s is the injury.
     if (isFlagged(fp)) for (let k = gws.length - 1; k >= 0 && mOf(gws[k])[0] === 0; k--) out.add(gws[k]);
-    const elig = gws.filter(g => !out.has(g)).slice(-DYN.window);
+    const allElig = gws.filter(g => !out.has(g));
+    const elig = allElig.slice(-DYN.window);
+    // Whole-season record (every eligible gameweek so far), alongside the recent window.
+    let sApps = 0, sBench = 0, sMins = 0;
+    allElig.forEach(g => {
+      const [mn] = mOf(g), sh = (mins.squads || {})[g], has = !!sh && sh.teams.includes(teamId);
+      if (has ? !!sh.ids[fp.id] : mn > 0) sApps++;
+      if (has && sh.ids[fp.id] === 1) sBench++;
+      sMins += mn;
+    });
+    const season = { gws: allElig.length, squads: sApps, bench: sBench, minutes: sMins };
     const total = elig.reduce((s, g) => s + mOf(g)[0], 0);
-    if (elig.length < DYN.minGws) return { i: null, n: elig.length, mins: total };
-    let s = 0, sw = 0;
+    if (elig.length < DYN.minGws) return { i: null, n: elig.length, mins: total, season };
+    let s = 0, sw = 0, apps = 0, bench = 0, sq = 0;
     elig.forEach((g, k) => {
       const w = Math.pow(DYN.decay, elig.length - 1 - k), n = games[g][teamId], [mn, st] = mOf(g);
-      s += w * (0.75 * Math.min(1, mn / (90 * n)) + 0.25 * Math.min(1, st / n)); sw += w;
+      const sh = (mins.squads || {})[g], has = !!sh && sh.teams.includes(teamId);
+      const inSq = has ? !!sh.ids[fp.id] : mn > 0; // team sheet when we have it, else minutes
+      if (inSq) apps++;
+      if (has && sh.ids[fp.id] === 1) bench++; // named, never came on
+      sq += w * (inSq ? 1 : 0);
+      s += w * (0.6 * Math.min(1, mn / (90 * n)) + 0.2 * Math.min(1, st / n) + 0.2 * (inSq ? 1 : 0)); sw += w;
     });
-    return { i: s / sw, n: elig.length, mins: total };
+    return { i: s / sw, n: elig.length, mins: total, apps, bench, sq: sq / sw, season };
   };
 
   clubOf.forEach((club, teamId) => {
@@ -501,12 +573,16 @@ function dynamicTiers(squads, players, clubOf, fixtures, mins, finished, log) {
       const q = fp ? pct(fp.element_type, fp.price) : 0;
       const prior = PRIOR[p.base_tier] ?? 0.15;
       const v = inv.i == null ? 0.7 * prior + 0.3 * q : 0.7 * inv.i + 0.15 * prior + 0.15 * q;
+      // First sub vs Youth / rotation is decided by how often he's in the matchday
+      // squad - a regular on the bench outranks an occasional cameo.
+      const vs = inv.i == null ? v : 0.3 * inv.sq + 0.15 * (inv.season.squads / Math.max(1, inv.season.gws)) + 0.35 * inv.i + 0.1 * prior + 0.1 * q;
       const why = p._new ? null : p.locked ? 'locked' : !fp ? 'unmatched' : isFlagged(fp) ? 'injured' : null;
       const prev = p.dyn || {};
       const vUse = why && prev.v_fit != null ? prev.v_fit : v;
-      p.dyn = { involvement: inv.i == null ? null : r2(inv.i), gws: inv.n, minutes: inv.mins, value: Math.round(vUse * 1000) / 1000,
-        v_fit: why ? (prev.v_fit ?? v) : v, frozen: why, gw: latest };
-      return { p, fp, v: vUse, q, i: inv.i, was: p.tier, frozen: !!why, pos: (fp && POS[fp.element_type]) || p.pos };
+      const vsUse = why && prev.vs_fit != null ? prev.vs_fit : vs;
+      p.dyn = { involvement: inv.i == null ? null : r2(inv.i), gws: inv.n, minutes: inv.mins, squads: inv.apps ?? null, bench: inv.bench ?? null, season: inv.season || null, value: Math.round(vUse * 1000) / 1000,
+        v_fit: why ? (prev.v_fit ?? v) : v, vs_fit: why ? (prev.vs_fit ?? vs) : vs, frozen: why, gw: latest };
+      return { p, fp, v: vUse, vs: vsUse, q, i: inv.i, was: p.tier, frozen: !!why, pos: (fp && POS[fp.element_type]) || p.pos };
     });
 
     const tierOf = new Map();
@@ -515,7 +591,13 @@ function dynamicTiers(squads, players, clubOf, fixtures, mins, finished, log) {
     const used = tier => [...tierOf.values()].filter(t => tier === 'first' ? inFirst(t) : t === tier).length;
     const heldAtLeast = (r, tier) => tier === 'first' ? inFirst(r.was) : (inFirst(r.was) || r.was === 'sub');
     const fill = (tier, cap) => {
-      const cand = rows.filter(r => !tierOf.has(r)).sort((a, b) => (b.v + heldAtLeast(b, tier) * DYN.stick) - (a.v + heldAtLeast(a, tier) * DYN.stick));
+      // Only players who have actually been in matchday squads (or are injured / locked /
+      // too new to judge) can hold a First choice or First sub place. Zero-involvement
+      // players are a last resort, used only if a club genuinely can't fill the tier.
+      const ok = r => r.i == null || r.i > 0;
+      const key = tier === 'sub' ? 'vs' : 'v';
+      const all = rows.filter(r => !tierOf.has(r)).sort((a, b) => (b[key] + heldAtLeast(b, tier) * DYN.stick) - (a[key] + heldAtLeast(a, tier) * DYN.stick));
+      const cand = all.filter(ok).concat(all.filter(r => !ok(r)));
       if (tier === 'first' && ![...tierOf].some(([r, t]) => inFirst(t) && r.pos === 'GK')) {
         const gk = cand.find(r => r.pos === 'GK');
         if (gk && used('first') < cap) tierOf.set(gk, 'first');
@@ -537,7 +619,8 @@ function dynamicTiers(squads, players, clubOf, fixtures, mins, finished, log) {
     const drop = new Set(rows.filter(r => tierOf.get(r) === 'youth' && !r.frozen).sort((a, b) => a.v - b.v).slice(0, Math.max(0, rows.length - MAX)));
     const kept = rows.filter(r => !drop.has(r));
     ['first', 'sub', 'youth'].forEach(t => {
-      const g = kept.filter(r => tierOf.get(r) === t).sort((a, b) => b.v - a.v);
+      const k = t === 'sub' ? 'vs' : 'v';
+      const g = kept.filter(r => tierOf.get(r) === t).sort((a, b) => b[k] - a[k]);
       g.forEach((r, k) => { r.p.score = r2(ANCHOR[t] + 0.4 - 0.8 * k / Math.max(1, g.length - 1)); });
     });
     if (best) best.p.score = ANCHOR.best;
@@ -547,7 +630,7 @@ function dynamicTiers(squads, players, clubOf, fixtures, mins, finished, log) {
       if (r.was && r.was !== t) {
         r.p.moved = { from: r.was, to: t, gw: latest };
         log.dynamic.push({ club: club.name, player: r.p.name, from: r.was, to: t, gw: latest,
-          reason: r.i == null ? 'Not enough games yet - squad list and price' : `${Math.round(r.i * 100)}% of available minutes over his last ${r.p.dyn.gws} GWs` });
+          reason: r.i == null ? 'Not enough games yet - squad list and price' : `last ${r.p.dyn.gws} GWs: ${r.p.dyn.squads} squads, ${r.p.dyn.bench} on the bench, ${r.p.dyn.minutes} mins; season: ${r.p.dyn.season.squads}/${r.p.dyn.season.gws} squads, ${r.p.dyn.season.bench} on the bench, ${r.p.dyn.season.minutes} mins` });
       }
       r.p.tier = t;
     });
@@ -815,6 +898,8 @@ async function main() {
     applyFeed(squads, feed, log);
     if (squads.dynamicTiers !== false) {
       const { m, finished } = await loadMinutes(data, players);
+      const ts = await loadSquadSheets(m, data, players, rawTeams, fixtures, finished);
+      console.log(`team sheets - ${ts.sheets} club line-ups read across ${ts.gws} gameweeks` + (ts.unmatched ? ` (${ts.unmatched} ESPN names not matched to FPL)` : ''));
       writeJson('minutes.json', m);
       dynamicTiers(squads, players, log.clubOf, fixtures, m, finished, log);
       console.log(`dynamic tiers - minutes through GW${squads.dynamic.through_gw ?? '-'}: ${log.dynamic.length} changes` +
